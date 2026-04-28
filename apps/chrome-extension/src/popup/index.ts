@@ -9,7 +9,7 @@ async function init(): Promise<void> {
   );
 
   if (sessions.length === 0) {
-    statusEl.textContent = 'No captured sessions yet. Open Gemini, ChatGPT, or Claude.';
+    statusEl.textContent = 'No captured sessions yet. Open Claude and start a conversation.';
     return;
   }
 
