@@ -1,4 +1,4 @@
-export type Provider = 'gemini' | 'chatgpt' | 'claude';
+export type Provider = 'claude';
 
 export interface ChatMessage {
   id: string;
@@ -19,7 +19,8 @@ export interface ChatSession {
 
 export type ContentToBackgroundMessage =
   | { type: 'SESSION_UPDATE'; session: ChatSession }
-  | { type: 'SESSION_START'; session: ChatSession };
+  | { type: 'SESSION_START'; session: ChatSession }
+  | { type: 'DOWNLOAD_REQUEST'; filename: string; content: string };
 
 export type BackgroundToContentMessage =
   | { type: 'PING' };
