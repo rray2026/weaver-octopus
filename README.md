@@ -50,6 +50,9 @@ pnpm format
 |-----|------|-------------|
 | `@weaver-octopus/api` | 3000 | Express REST API |
 | `@weaver-octopus/web` | 3001 | Web server |
+| `@weaver-octopus/chrome-extension` | — | Chrome extension — captures Claude chats as Markdown |
+
+See [`apps/chrome-extension/DEVELOPMENT.md`](apps/chrome-extension/DEVELOPMENT.md) for the extension's architecture, DOM selectors, and debugging guide.
 
 ## Packages
 
