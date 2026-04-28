@@ -1,0 +1,22 @@
+{
+  "name": "@weaver-octopus/chrome-extension",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@weaver-octopus/utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.320",
+    "@types/node": "^22.0.0",
+    "@weaver-octopus/tsconfig": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}
