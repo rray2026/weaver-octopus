@@ -1,0 +1,11 @@
+{
+  "name": "@weaver-octopus/tsconfig",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "*.json"
+  ],
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
