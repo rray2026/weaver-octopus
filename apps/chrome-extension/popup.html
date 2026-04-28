@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Weaver Octopus</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        width: 320px;
+        min-height: 200px;
+        font-family: system-ui, sans-serif;
+        font-size: 14px;
+        background: #fafafa;
+        color: #111;
+        padding: 16px;
+      }
+      h1 { font-size: 16px; margin-bottom: 12px; }
+      #status { color: #666; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>Weaver Octopus</h1>
+    <p id="status">Loading...</p>
+    <script type="module" src="./src/popup/index.ts"></script>
+  </body>
+</html>
