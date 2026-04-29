@@ -16,6 +16,10 @@ out
 # Test coverage
 coverage
 
+# Playwright
+test-results
+playwright-report
+
 # Environment
 .env
 .env.local
