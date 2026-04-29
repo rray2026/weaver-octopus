@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
+        intercept: resolve(__dirname, 'src/content/main-world/intercept.ts'),
         popup: resolve(__dirname, 'popup.html'),
       },
       output: {

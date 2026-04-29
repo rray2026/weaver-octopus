@@ -15,17 +15,16 @@ export function messagesToMarkdown(
   messages: ChatMessage[],
   title: string,
   url: string,
+  rangeLabel?: string,
 ): string {
   const lines: string[] = [
     `# ${title}`,
     '',
     `**Provider**: claude`,
     `**Captured**: ${todayDateString()}`,
-    `**URL**: ${url}`,
-    '',
-    '---',
-    '',
   ];
+  if (rangeLabel) lines.push(`**Range**: ${rangeLabel}`);
+  lines.push(`**URL**: ${url}`, '', '---', '');
 
   for (const msg of messages) {
     const heading = msg.role === 'user' ? '## User' : '## Assistant';

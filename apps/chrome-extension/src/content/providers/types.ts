@@ -1,10 +1,13 @@
 import type { ChatMessage } from '../../types/index.js';
 
-export interface ProviderScraper {
-  /** Returns true when generation is in progress (e.g. Stop button visible). */
-  isStreaming(): boolean;
-  /** Scrapes all current messages from the DOM. Returns empty array if DOM not ready. */
-  scrapeMessages(): ChatMessage[];
-  /** Extracts the chat title from the page. */
-  getTitle(): string;
+export interface ConversationData {
+  title: string;
+  url: string;
+  messages: ChatMessage[];
+}
+
+export interface ProviderParser {
+  /** Parses a raw conversation API response body into a normalized form.
+   *  Returns null if the body doesn't look like a conversation (e.g. wrong shape). */
+  parseConversation(body: unknown, url: string, fallbackTitle: string): ConversationData | null;
 }

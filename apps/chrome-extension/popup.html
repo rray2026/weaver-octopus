@@ -8,20 +8,106 @@
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
         width: 320px;
-        min-height: 200px;
-        font-family: system-ui, sans-serif;
-        font-size: 14px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 13px;
         background: #fafafa;
         color: #111;
         padding: 16px;
       }
-      h1 { font-size: 16px; margin-bottom: 12px; }
-      #status { color: #666; font-size: 13px; }
+      h1 { font-size: 15px; margin-bottom: 12px; }
+      h2 {
+        font-size: 12px;
+        font-weight: 600;
+        margin: 12px 0 6px;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .shortcuts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .shortcuts button {
+        flex: 0 0 auto;
+        padding: 5px 10px;
+        border: 1px solid #d0d0d0;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        color: #222;
+      }
+      .shortcuts button:hover { background: #f0f0f0; }
+      .shortcuts button.active {
+        background: #2b65d8;
+        color: #fff;
+        border-color: #2b65d8;
+      }
+      .range-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .range-row input[type="date"] {
+        font-size: 12px;
+        padding: 3px 5px;
+        border: 1px solid #d0d0d0;
+        border-radius: 4px;
+        background: #fff;
+        flex: 1;
+      }
+      .range-row span { color: #888; }
+      #status {
+        color: #666;
+        font-size: 11px;
+        margin-top: 14px;
+        padding-top: 10px;
+        border-top: 1px solid #eaeaea;
+        word-break: break-all;
+        line-height: 1.4;
+      }
+      .reset-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 12px;
+      }
+      #reset-btn {
+        padding: 5px 10px;
+        border: 1px solid #d0d0d0;
+        background: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        color: #b22;
+      }
+      #reset-btn:hover { background: #fdf0f0; border-color: #b22; }
+      #reset-btn:disabled { opacity: 0.5; cursor: default; }
+      #cache-count { font-size: 11px; color: #666; }
     </style>
   </head>
   <body>
     <h1>Weaver Octopus</h1>
-    <p id="status">Loading...</p>
+    <h2>Date filter</h2>
+    <div class="shortcuts" id="shortcuts">
+      <button data-type="today">今天</button>
+      <button data-type="yesterday">昨天</button>
+      <button data-type="last7days">近 7 天</button>
+      <button data-type="thisWeek">本周</button>
+      <button data-type="range">自定义</button>
+    </div>
+    <div class="range-row" id="range-row" hidden>
+      <input type="date" id="start-date" />
+      <span>→</span>
+      <input type="date" id="end-date" />
+    </div>
+    <p id="status">Loading…</p>
+    <div class="reset-row">
+      <span id="cache-count"></span>
+      <button id="reset-btn" type="button">Reset cache</button>
+    </div>
     <script type="module" src="./src/popup/index.ts"></script>
   </body>
 </html>

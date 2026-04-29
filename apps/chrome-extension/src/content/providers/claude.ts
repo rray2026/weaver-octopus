@@ -1,44 +1,58 @@
 import type { ChatMessage } from '../../types/index.js';
-import type { ProviderScraper } from './types.js';
+import type { ConversationData, ProviderParser } from './types.js';
 
-export class ClaudeScraper implements ProviderScraper {
-  isStreaming(): boolean {
-    return document.querySelector('[data-testid="stop-button"]') !== null;
+interface ApiContentBlock {
+  type: string;
+  text?: string;
+}
+
+interface ApiMessage {
+  uuid: string;
+  sender: 'human' | 'assistant';
+  created_at: string;
+  content: ApiContentBlock[];
+}
+
+interface ApiConversation {
+  uuid: string;
+  name?: string;
+  chat_messages: ApiMessage[];
+}
+
+export class ClaudeParser implements ProviderParser {
+  parseConversation(body: unknown, url: string, fallbackTitle: string): ConversationData | null {
+    if (!isApiConversation(body)) return null;
+
+    const messages: ChatMessage[] = body.chat_messages
+      .map((m) => ({
+        id: m.uuid,
+        role: (m.sender === 'human' ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: extractText(m.content),
+        createdAt: Date.parse(m.created_at),
+      }))
+      .filter((m) => m.content.length > 0);
+
+    return {
+      title: body.name?.trim() || fallbackTitle || 'Untitled',
+      url,
+      messages,
+    };
   }
+}
 
-  scrapeMessages(): ChatMessage[] {
-    const messages: ChatMessage[] = [];
+function isApiConversation(body: unknown): body is ApiConversation {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    Array.isArray((body as { chat_messages?: unknown }).chat_messages)
+  );
+}
 
-    const userEls = Array.from(document.querySelectorAll('[data-testid="user-message"]'));
-    const assistantEls = Array.from(
-      document.querySelectorAll('.font-claude-message, [data-testid="assistant-message"]'),
-    );
-
-    // Interleave user and assistant turns by DOM order
-    const allEls: Array<{ el: Element; role: 'user' | 'assistant' }> = [
-      ...userEls.map((el) => ({ el, role: 'user' as const })),
-      ...assistantEls.map((el) => ({ el, role: 'assistant' as const })),
-    ].sort((a, b) => {
-      const pos = a.el.compareDocumentPosition(b.el);
-      return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-    });
-
-    for (let i = 0; i < allEls.length; i++) {
-      const { el, role } = allEls[i]!;
-      const content = el.textContent?.trim() ?? '';
-      if (!content) continue;
-      messages.push({
-        id: `${role}-${i}`,
-        role,
-        content,
-        timestamp: Date.now(),
-      });
-    }
-
-    return messages;
-  }
-
-  getTitle(): string {
-    return document.title.replace(/\s*[-–]\s*Claude\s*$/, '').trim() || 'Untitled';
-  }
+function extractText(content: ApiContentBlock[]): string {
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((c) => c.type === 'text' && c.text)
+    .map((c) => c.text!.trim())
+    .filter((s) => s.length > 0)
+    .join('\n\n');
 }
