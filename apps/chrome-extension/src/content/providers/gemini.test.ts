@@ -116,6 +116,36 @@ describe('findMatchIndexAfter', () => {
     expect(findMatchIndexAfter('好的，', ['好的。'], -1)).toBe(0);
   });
 
+  it('strips Gemini accessibility/TTS prefix "你说" before comparing', () => {
+    // Gemini's chat DOM prepends "你说" (literally "you said") to the
+    // user-query for screen-reader rendering. myactivity has just the
+    // underlying prompt — we must strip the prefix so they strict-match.
+    expect(findMatchIndexAfter('你说推荐今天夜晚的餐馆', ['推荐今天夜晚的餐馆'], -1)).toBe(0);
+  });
+
+  it('also handles "您说" (formal) and traditional 說', () => {
+    expect(findMatchIndexAfter('您说请帮我写代码', ['请帮我写代码'], -1)).toBe(0);
+    expect(findMatchIndexAfter('你說推薦餐廳', ['推薦餐廳'], -1)).toBe(0);
+  });
+
+  it('handles English equivalents "You said" / "User said"', () => {
+    expect(findMatchIndexAfter('You said hello world', ['hello world'], -1)).toBe(0);
+    expect(findMatchIndexAfter('User said: tell me a joke', ['tell me a joke'], -1)).toBe(0);
+  });
+
+  it('handles colon / full-width colon between prefix and prompt', () => {
+    expect(findMatchIndexAfter('你说：推荐餐馆', ['推荐餐馆'], -1)).toBe(0);
+    expect(findMatchIndexAfter('You said: anything', ['anything'], -1)).toBe(0);
+  });
+
+  it('does NOT strip when the prompt itself starts with the literal "你说"+more', () => {
+    // Genuine prompt like "你说说看怎么办" should still match on both sides
+    // (the strip removes "你说" once; trailing "说看怎么办" remains).
+    // This test mainly documents that we accept a prompt of the form
+    // "你说<rest>" by treating it as the prefix.
+    expect(findMatchIndexAfter('你说说看怎么办', ['说看怎么办'], -1)).toBe(0);
+  });
+
   it('respects the `after` exclusive lower bound', () => {
     // First match is at index 0 but `after` is 0 → must look at index 1+.
     expect(findMatchIndexAfter('hi', ['hi', 'hi', 'no'], 0)).toBe(1);

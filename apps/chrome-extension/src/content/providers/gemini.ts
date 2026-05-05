@@ -148,9 +148,22 @@ export function isTruncated(raw: string): boolean {
 //   ellipsis: … (single) and runs of …
 const TRAILING_PUNCT_RE = /[…….?!,;:。？！，；：]+$/u;
 
+// Gemini's chat DOM wraps each user-query in an accessibility shell that
+// renders "You said" / "你说" before the actual prompt — innerText picks
+// that up and prepends it to the user-typed text. myactivity stores only
+// the underlying prompt, so the two would never strict-match without this
+// strip. Run it on BOTH sides for symmetry (myactivity normally doesn't
+// have it; if it ever does, the comparison stays consistent).
+const LEADING_TTS_PREFIX_RE =
+  /^(?:你[说說]|您[说說]|you\s*said|user\s*(?:said|wrote|asked|message))\s*[:：]?\s*/i;
+
 export function normalizeForMatch(s: string): string {
-  let out = (s || '').replace(/\s+/g, '');
-  // Strip trailing punctuation iteratively (e.g. "??！" → "" in one pass).
+  // Step 1: drop the accessibility prefix BEFORE collapsing whitespace, so
+  // "You said: hello" becomes "hello" rather than "yousaid:hello" first.
+  let out = (s || '').replace(LEADING_TTS_PREFIX_RE, '');
+  // Step 2: drop all whitespace.
+  out = out.replace(/\s+/g, '');
+  // Step 3: strip trailing punctuation iteratively (e.g. "??！" → "").
   while (TRAILING_PUNCT_RE.test(out)) out = out.replace(TRAILING_PUNCT_RE, '');
   return out.toLowerCase();
 }
