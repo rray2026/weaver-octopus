@@ -13,6 +13,11 @@ const LAST_DOWNLOAD_KEY = 'lastDownload';
 const HASH_STORAGE_KEY = 'convHashes';
 const BACKFILL_PROGRESS_KEY = 'backfillProgress';
 const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
+const BACKFILL_INTERVAL_KEY = 'backfillIntervalSec';
+const DEFAULT_INTERVAL_MIN_SEC = 4;
+const DEFAULT_INTERVAL_MAX_SEC = 6;
+const INTERVAL_HARD_MIN_SEC = 0;
+const INTERVAL_HARD_MAX_SEC = 600;
 
 async function init(): Promise<void> {
   const statusEl = document.getElementById('status');
@@ -106,6 +111,12 @@ async function init(): Promise<void> {
 
   await initClaudeMode();
 
+  // ─── Backfill interval inputs (per-chat random sleep range, in seconds) ──
+
+  const intervalMinInput = document.getElementById('interval-min') as HTMLInputElement | null;
+  const intervalMaxInput = document.getElementById('interval-max') as HTMLInputElement | null;
+  await initIntervalInputs(intervalMinInput, intervalMaxInput);
+
   // ─── Backfill wiring ──────────────────────────────────────────────────────
 
   backfillStartBtn.addEventListener('click', async () => {
@@ -116,9 +127,15 @@ async function init(): Promise<void> {
       alert('请至少勾选一个 provider');
       return;
     }
+    const interval = readIntervalFromInputs(intervalMinInput, intervalMaxInput);
     backfillStartBtn.disabled = true;
     try {
-      const ack = await chrome.runtime.sendMessage({ type: 'START_BACKFILL', providers });
+      const ack = await chrome.runtime.sendMessage({
+        type: 'START_BACKFILL',
+        providers,
+        intervalMinSec: interval.minSec,
+        intervalMaxSec: interval.maxSec,
+      });
       if (!ack?.ok) {
         alert(`无法开始：${ack?.error ?? 'unknown error'}`);
       }
@@ -182,6 +199,30 @@ async function init(): Promise<void> {
       providersEl.appendChild(makeProviderRow(p, pp));
     }
     renderLog(logEl, prog);
+  }
+
+  async function initIntervalInputs(
+    minInput: HTMLInputElement | null,
+    maxInput: HTMLInputElement | null,
+  ): Promise<void> {
+    if (!minInput || !maxInput) return;
+    const stored = await chrome.storage.local.get(BACKFILL_INTERVAL_KEY);
+    const raw = stored[BACKFILL_INTERVAL_KEY] as
+      | { minSec?: number; maxSec?: number }
+      | undefined;
+    const seeded = sanitizeInterval(raw?.minSec, raw?.maxSec);
+    minInput.value = String(seeded.minSec);
+    maxInput.value = String(seeded.maxSec);
+    const persist = async (): Promise<void> => {
+      const cur = readIntervalFromInputs(minInput, maxInput);
+      // Reflect the clamped values back into the inputs so the user sees
+      // exactly what got persisted (e.g. swap if min > max).
+      minInput.value = String(cur.minSec);
+      maxInput.value = String(cur.maxSec);
+      await chrome.storage.local.set({ [BACKFILL_INTERVAL_KEY]: cur });
+    };
+    minInput.addEventListener('change', persist);
+    maxInput.addEventListener('change', persist);
   }
 
   async function initClaudeMode(): Promise<void> {
@@ -314,6 +355,31 @@ function makeLine(text: string): HTMLElement {
 
 function isoFromMs(ms: number): string {
   return new Date(ms).toLocaleDateString('en-CA');
+}
+
+/** Reads min/max seconds out of the two number inputs, sanitises them
+ *  (clamp to [0, 600], swap if reversed, NaN → defaults) and returns the
+ *  cleaned pair. Used both for persistence on change and right before
+ *  START_BACKFILL is dispatched. */
+export function readIntervalFromInputs(
+  minInput: HTMLInputElement | null,
+  maxInput: HTMLInputElement | null,
+): { minSec: number; maxSec: number } {
+  const rawMin = minInput ? parseFloat(minInput.value) : NaN;
+  const rawMax = maxInput ? parseFloat(maxInput.value) : NaN;
+  return sanitizeInterval(rawMin, rawMax);
+}
+
+export function sanitizeInterval(
+  rawMin: number | undefined,
+  rawMax: number | undefined,
+): { minSec: number; maxSec: number } {
+  let minSec = Number.isFinite(rawMin) ? (rawMin as number) : DEFAULT_INTERVAL_MIN_SEC;
+  let maxSec = Number.isFinite(rawMax) ? (rawMax as number) : DEFAULT_INTERVAL_MAX_SEC;
+  minSec = Math.max(INTERVAL_HARD_MIN_SEC, Math.min(INTERVAL_HARD_MAX_SEC, minSec));
+  maxSec = Math.max(INTERVAL_HARD_MIN_SEC, Math.min(INTERVAL_HARD_MAX_SEC, maxSec));
+  if (maxSec < minSec) [minSec, maxSec] = [maxSec, minSec];
+  return { minSec, maxSec };
 }
 
 init();

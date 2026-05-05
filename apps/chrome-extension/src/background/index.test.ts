@@ -282,6 +282,53 @@ describe('background REFRESH_ACTIVITY', () => {
   });
 });
 
+describe('background resolveInterval', () => {
+  let resolveInterval: typeof import('./index.js').resolveInterval;
+
+  beforeEach(async () => {
+    installChromeMock();
+    vi.resetModules();
+    const mod = await import('./index.js');
+    resolveInterval = mod.resolveInterval;
+  });
+
+  afterEach(() => {
+    uninstallChromeMock();
+  });
+
+  it('falls back to defaults (4–6s) when overrides are missing', () => {
+    expect(resolveInterval({})).toEqual({ minMs: 4000, maxMs: 6000 });
+  });
+
+  it('converts seconds to ms', () => {
+    expect(resolveInterval({ intervalMinSec: 10, intervalMaxSec: 20 })).toEqual({
+      minMs: 10_000,
+      maxMs: 20_000,
+    });
+  });
+
+  it('clamps to [0, 600] seconds', () => {
+    expect(resolveInterval({ intervalMinSec: -5, intervalMaxSec: 9999 })).toEqual({
+      minMs: 0,
+      maxMs: 600_000,
+    });
+  });
+
+  it('swaps when min > max', () => {
+    expect(resolveInterval({ intervalMinSec: 30, intervalMaxSec: 5 })).toEqual({
+      minMs: 5000,
+      maxMs: 30_000,
+    });
+  });
+
+  it('treats NaN as missing and falls back to defaults', () => {
+    expect(resolveInterval({ intervalMinSec: NaN, intervalMaxSec: NaN })).toEqual({
+      minMs: 4000,
+      maxMs: 6000,
+    });
+  });
+});
+
 describe('background appendLog', () => {
   let appendLog: typeof import('./index.js').__backfillInternals.appendLog;
 

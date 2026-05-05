@@ -35,6 +35,9 @@ const POPUP_DOM = `
     <label><input type="radio" name="claude-mode" value="fetch" /> 主动 fetch</label>
   </div>
 
+  <input type="number" id="interval-min" />
+  <input type="number" id="interval-max" />
+
   <div>
     <input type="checkbox" id="provider-claude" checked />
     <input type="checkbox" id="provider-gemini" checked />
@@ -201,6 +204,79 @@ describe('popup', () => {
 
     expect(mock.storage.local[LAST_DOWNLOAD_KEY]).toEqual({ filename: 'keep.md', at: 1 });
     expect(mock.storage.local[HASH_KEY]).toEqual({ c1: 'h' });
+  });
+
+  describe('Backfill interval inputs', () => {
+    it('seeds the inputs with defaults (4..6s) when nothing is stored', async () => {
+      await loadPopup();
+      const min = document.getElementById('interval-min') as HTMLInputElement;
+      const max = document.getElementById('interval-max') as HTMLInputElement;
+      expect(min.value).toBe('4');
+      expect(max.value).toBe('6');
+    });
+
+    it('reflects a previously stored interval', async () => {
+      mock.storage.local['backfillIntervalSec'] = { minSec: 10, maxSec: 30 };
+      await loadPopup();
+      const min = document.getElementById('interval-min') as HTMLInputElement;
+      const max = document.getElementById('interval-max') as HTMLInputElement;
+      expect(min.value).toBe('10');
+      expect(max.value).toBe('30');
+    });
+
+    it('persists changes to chrome.storage.local on input change', async () => {
+      await loadPopup();
+      const min = document.getElementById('interval-min') as HTMLInputElement;
+      const max = document.getElementById('interval-max') as HTMLInputElement;
+      min.value = '7';
+      max.value = '12';
+      min.dispatchEvent(new Event('change'));
+      await flushAsync();
+      expect(mock.storage.local['backfillIntervalSec']).toEqual({ minSec: 7, maxSec: 12 });
+    });
+
+    it('swaps inputs and clamps when the user enters min > max or out-of-range', async () => {
+      await loadPopup();
+      const min = document.getElementById('interval-min') as HTMLInputElement;
+      const max = document.getElementById('interval-max') as HTMLInputElement;
+      min.value = '50';
+      max.value = '5';
+      min.dispatchEvent(new Event('change'));
+      await flushAsync();
+      // After sanitisation the smaller value moves to min.
+      expect(min.value).toBe('5');
+      expect(max.value).toBe('50');
+      expect(mock.storage.local['backfillIntervalSec']).toEqual({ minSec: 5, maxSec: 50 });
+    });
+
+    it('clamps unreasonably large values to the hard upper bound (600s)', async () => {
+      await loadPopup();
+      const min = document.getElementById('interval-min') as HTMLInputElement;
+      const max = document.getElementById('interval-max') as HTMLInputElement;
+      min.value = '1';
+      max.value = '99999';
+      max.dispatchEvent(new Event('change'));
+      await flushAsync();
+      expect(max.value).toBe('600');
+    });
+
+    it('sends the configured interval in START_BACKFILL on click', async () => {
+      mock.storage.local['backfillIntervalSec'] = { minSec: 8, maxSec: 15 };
+      await loadPopup();
+      mock.runtime.sendMessage.mockResolvedValue({ ok: true });
+      (document.getElementById('backfill-start') as HTMLButtonElement).click();
+      await flushAsync();
+
+      const start = mock.runtime.sendMessage.mock.calls.find(
+        (c) => (c[0] as { type: string }).type === 'START_BACKFILL',
+      );
+      expect(start).toBeDefined();
+      expect(start![0]).toMatchObject({
+        type: 'START_BACKFILL',
+        intervalMinSec: 8,
+        intervalMaxSec: 15,
+      });
+    });
   });
 
   describe('Claude capture mode toggle', () => {

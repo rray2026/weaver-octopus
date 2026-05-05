@@ -44,7 +44,14 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 type IncomingMessage =
   | ContentToBackgroundMessage
-  | { type: 'START_BACKFILL'; providers: Provider[] }
+  | {
+      type: 'START_BACKFILL';
+      providers: Provider[];
+      /** Optional override for per-chat random sleep window (seconds).
+       *  Falls back to the BACKFILL_DEFAULT_*_INTERVAL_MS constants. */
+      intervalMinSec?: number;
+      intervalMaxSec?: number;
+    }
   | { type: 'STOP_BACKFILL' };
 
 chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResponse) => {
@@ -104,7 +111,14 @@ chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResp
       sendResponse({ ok: false, error: 'START_BACKFILL only allowed from popup' });
       return false;
     }
-    startBackfill(message.providers, tag)
+    startBackfill(
+      message.providers,
+      tag,
+      {
+        intervalMinSec: message.intervalMinSec,
+        intervalMaxSec: message.intervalMaxSec,
+      },
+    )
       .then((res) => sendResponse(res))
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
@@ -241,9 +255,15 @@ export function __resetActivityThrottleForTests(): void {
 
 // ─── Backfill coordinator ────────────────────────────────────────────────────
 
+interface StartBackfillOverrides {
+  intervalMinSec?: number;
+  intervalMaxSec?: number;
+}
+
 async function startBackfill(
   providers: Provider[],
   tag: string,
+  overrides: StartBackfillOverrides = {},
 ): Promise<{ ok: boolean; error?: string }> {
   if (providers.length === 0) return { ok: false, error: 'no providers selected' };
 
@@ -268,6 +288,8 @@ async function startBackfill(
   // here we use it to pick the BACKFILL_RUN mode. Gemini is always click-
   // based (no clean conversation API to call directly).
   const claudeMode = await readClaudeCaptureMode();
+  const interval = resolveInterval(overrides);
+  console.log(tag, 'backfill interval', interval);
 
   // Open / focus a tab per provider, all under one tab group.
   const tabIds: number[] = [];
@@ -344,8 +366,8 @@ async function startBackfill(
     const message: BackgroundToContentMessage = {
       type: 'BACKFILL_RUN',
       provider,
-      minIntervalMs: BACKFILL_DEFAULT_MIN_INTERVAL_MS,
-      maxIntervalMs: BACKFILL_DEFAULT_MAX_INTERVAL_MS,
+      minIntervalMs: interval.minMs,
+      maxIntervalMs: interval.maxMs,
       perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
       stopAfterConsecutiveDateSkips: BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS,
       mode: provider === 'claude' && claudeMode === 'fetch' ? 'fetch' : 'click',
@@ -500,6 +522,32 @@ async function ensureContentScriptReady(
     });
   }
   return second.matched;
+}
+
+/** Clamps the popup-supplied interval into the runner's accepted shape.
+ *  Defaults preserve the previous behaviour (4–6s). 0 is allowed (no
+ *  pacing, useful for fetch-mode where each request is cheap).
+ *
+ *  Exported for unit tests. */
+export function resolveInterval(overrides: StartBackfillOverrides): {
+  minMs: number;
+  maxMs: number;
+} {
+  const HARD_MIN_SEC = 0;
+  const HARD_MAX_SEC = 600;
+  const fallbackMinMs = BACKFILL_DEFAULT_MIN_INTERVAL_MS;
+  const fallbackMaxMs = BACKFILL_DEFAULT_MAX_INTERVAL_MS;
+
+  const clamp = (v: number | undefined, fallback: number): number => {
+    if (v == null || !Number.isFinite(v)) return fallback;
+    const sec = Math.max(HARD_MIN_SEC, Math.min(HARD_MAX_SEC, v));
+    return Math.round(sec * 1000);
+  };
+
+  let minMs = clamp(overrides.intervalMinSec, fallbackMinMs);
+  let maxMs = clamp(overrides.intervalMaxSec, fallbackMaxMs);
+  if (maxMs < minMs) [minMs, maxMs] = [maxMs, minMs];
+  return { minMs, maxMs };
 }
 
 async function readClaudeCaptureMode(): Promise<ClaudeCaptureMode> {
