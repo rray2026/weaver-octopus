@@ -350,6 +350,81 @@ describe('runBackfill', () => {
     expect(logs[0]!.status).toBe('skipped');
   });
 
+  describe('stop latency', () => {
+    it('returns soon after stop is requested mid-pacing (does not wait full jitter)', async () => {
+      const links = Array.from({ length: 5 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const navigate = vi.fn(async (link: { href: string }) => {
+        const id = link.href.split('/').pop()!;
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: id,
+          action: 'downloaded',
+        });
+      });
+      const adapter = makeAdapter({ links, navigate });
+
+      const startedAt = Date.now();
+      // Set stop after first chat is in flight, so we abort *during* pacing.
+      const reportPatch = async (p: BackfillProviderProgressPatch) => {
+        if (p.done === 1) {
+          // Simulate the popup writing the stop flag right after the first
+          // chat completed and the runner entered the pacing sleep.
+          setTimeout(() => {
+            mock.storage.local[STOP_FLAG_KEY] = true;
+          }, 50);
+        }
+      };
+
+      await runBackfill(adapter, {
+        // 5s pacing — without abortable sleep this would dominate stop latency.
+        minIntervalMs: 5000,
+        maxIntervalMs: 5000,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        reportPatch,
+      });
+
+      const elapsed = Date.now() - startedAt;
+      // First chat (~immediate) + stop fires at +50ms + abortable sleep
+      // notices within ~200ms poll. Allow generous slack for jsdom.
+      expect(elapsed).toBeLessThan(2000);
+      // Only the first chat was navigated; the rest should be aborted.
+      expect(navigate).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns soon after stop when the wait races on the download channel timeout', async () => {
+      // No decision event ever fires — runner falls into the perChatTimeoutMs
+      // wait. Stop must short-circuit it without awaiting the decision
+      // channel's self-timeout.
+      const links = [{ href: '/chat/abc', title: 'A' }];
+      const navigate = vi.fn(async () => {
+        // Set stop flag immediately. The download poll observes it within
+        // pollIntervalMs and returns false; we must NOT then block on the
+        // decision channel's full timeout.
+        mock.storage.local[STOP_FLAG_KEY] = true;
+      });
+      const adapter = makeAdapter({ links, navigate });
+
+      const startedAt = Date.now();
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        // perChatTimeoutMs intentionally LARGE — buggy runner would block here.
+        perChatTimeoutMs: 10_000,
+        pollIntervalMs: 50,
+        reportPatch: async () => undefined,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      // Stop observed by download poller within ~50ms; runner must NOT then
+      // wait 10s for the decision channel.
+      expect(elapsed).toBeLessThan(1500);
+    });
+  });
+
   describe('early termination on consecutive date skips', () => {
     function makeChainAdapter(
       links: Array<{ href: string; title: string }>,

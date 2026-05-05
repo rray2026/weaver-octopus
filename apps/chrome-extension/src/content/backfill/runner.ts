@@ -215,7 +215,10 @@ export async function runBackfill(
     if (i < links.length - 1) {
       const delay = jitter(opts.minIntervalMs, opts.maxIntervalMs);
       console.log(tag, `pacing ${delay}ms before next`);
-      await sleep(delay);
+      // Pacing must observe the stop flag promptly — otherwise a stop
+      // request mid-pacing would wait the full 4–6s before the loop's
+      // top-of-iteration check fires.
+      await sleepAbortable(delay, isStopRequested);
     }
   }
 
@@ -265,10 +268,12 @@ async function waitForCaptureSignal(
   if (winner.kind === 'download' && winner.advanced) {
     return { outcome: 'ok', action: 'downloaded' };
   }
-  // Both channels timed out (or download channel returned false without
-  // advance). Wait for the decision channel to also resolve so we don't
-  // leak its listener — but cap at the same overall timeout.
-  if (decisionPromise) await decisionPromise.catch(() => undefined);
+  // Download channel returned false (timeout OR stop flag observed). Do NOT
+  // await decisionPromise here — its internal setTimeout will fire and remove
+  // the listener on its own schedule. Awaiting it would gate stop-latency on
+  // the full perChatTimeoutMs (~20s of "正在停止" UI hang). The pending
+  // setTimeout/listener pair becomes garbage after the timer fires; not a
+  // real leak.
   return {
     outcome: 'skipped',
     reason: 'no decision/download captured within timeout (cached / empty)',
@@ -328,6 +333,22 @@ function waitForDecision(
       resolve('timeout');
     }, timeoutMs);
   });
+}
+
+/** sleep(ms) but checks the stop predicate every poll interval and resolves
+ *  early if it returns true. Used for pacing between chats so a stop request
+ *  doesn't wait out the full 4–6s jitter before being observed. */
+async function sleepAbortable(
+  totalMs: number,
+  shouldStop: () => Promise<boolean>,
+  pollMs = 200,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < totalMs) {
+    if (await shouldStop()) return;
+    const remaining = totalMs - (Date.now() - startedAt);
+    await sleep(Math.min(pollMs, remaining));
+  }
 }
 
 async function readLastDownload(): Promise<LastDownload | undefined> {
