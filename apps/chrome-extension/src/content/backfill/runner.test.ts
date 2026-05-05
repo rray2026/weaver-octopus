@@ -350,6 +350,194 @@ describe('runBackfill', () => {
     expect(logs[0]!.status).toBe('skipped');
   });
 
+  describe('early termination on consecutive date skips', () => {
+    function makeChainAdapter(
+      links: Array<{ href: string; title: string }>,
+      decisions: Array<{ action: 'downloaded' | 'skipped:date' | 'skipped:hash' | 'skipped:empty' | 'skipped:other'; reason?: string }>,
+    ): { adapter: BackfillProviderAdapter; navigate: ReturnType<typeof vi.fn> } {
+      const navigate = vi.fn(async (link: { href: string }) => {
+        const idx = links.findIndex((l) => l.href === link.href);
+        const decision = decisions[idx]!;
+        const id = link.href.split('/').pop()!;
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: id,
+          action: decision.action,
+          reason: decision.reason,
+        });
+      });
+      const adapter = makeAdapter({ links, navigate });
+      return { adapter, navigate };
+    }
+
+    it('stops after threshold consecutive skipped:date and logs "early stop"', async () => {
+      const links = Array.from({ length: 10 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(
+        links,
+        // c0: ok, c1..c5: skipped:date (5 consecutive), c6..c9: shouldn't be visited
+        [
+          { action: 'downloaded' },
+          { action: 'skipped:date', reason: 'oor' },
+          { action: 'skipped:date', reason: 'oor' },
+          { action: 'skipped:date', reason: 'oor' },
+          { action: 'skipped:date', reason: 'oor' },
+          { action: 'skipped:date', reason: 'oor' },
+          { action: 'downloaded' }, // unreachable
+          { action: 'downloaded' },
+          { action: 'downloaded' },
+          { action: 'downloaded' },
+        ],
+      );
+      const patches: BackfillProviderProgressPatch[] = [];
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        stopAfterConsecutiveDateSkips: 5,
+        reportPatch: async (p) => {
+          patches.push(p);
+        },
+      });
+
+      expect(navigate).toHaveBeenCalledTimes(6); // c0 + c1..c5
+      const logs = patches.flatMap((p) => p.appendLog ?? []);
+      const earlyStop = logs.find((l) => l.reason?.startsWith('early stop'));
+      expect(earlyStop).toBeDefined();
+      expect(earlyStop!.reason).toMatch(/5 consecutive/);
+      expect(earlyStop!.reason).toMatch(/remaining 4/);
+    });
+
+    it('resets counter when an "ok" outcome interrupts the streak', async () => {
+      const links = Array.from({ length: 10 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(
+        links,
+        [
+          { action: 'skipped:date' }, // 1
+          { action: 'skipped:date' }, // 2
+          { action: 'skipped:date' }, // 3
+          { action: 'skipped:date' }, // 4
+          { action: 'downloaded' },   // resets
+          { action: 'skipped:date' }, // 1 again
+          { action: 'skipped:date' }, // 2
+          { action: 'skipped:date' }, // 3
+          { action: 'skipped:date' }, // 4
+          { action: 'skipped:date' }, // 5 — would trigger
+        ],
+      );
+      const patches: BackfillProviderProgressPatch[] = [];
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        stopAfterConsecutiveDateSkips: 5,
+        reportPatch: async (p) => {
+          patches.push(p);
+        },
+      });
+
+      // The 5-streak ends exactly at the last item, so the early-stop log is
+      // NOT emitted (i+1 === links.length).
+      expect(navigate).toHaveBeenCalledTimes(10);
+      const logs = patches.flatMap((p) => p.appendLog ?? []);
+      expect(logs.find((l) => l.reason?.startsWith('early stop'))).toBeUndefined();
+    });
+
+    it('does not count "skipped:hash" or "skipped:empty" toward early termination', async () => {
+      const links = Array.from({ length: 8 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(
+        links,
+        [
+          { action: 'skipped:date' }, // 1
+          { action: 'skipped:hash' }, // resets
+          { action: 'skipped:date' }, // 1
+          { action: 'skipped:empty' }, // resets
+          { action: 'skipped:date' }, // 1
+          { action: 'skipped:date' }, // 2
+          { action: 'skipped:date' }, // 3
+          { action: 'downloaded' },
+        ],
+      );
+      const patches: BackfillProviderProgressPatch[] = [];
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        stopAfterConsecutiveDateSkips: 3, // tight threshold
+        reportPatch: async (p) => {
+          patches.push(p);
+        },
+      });
+
+      // Cached/empty resets the streak — visits 0..6 are normal. At i=6 the
+      // streak hits exactly 3 (≥ threshold) AND there's still a chat (i=7)
+      // remaining, so early-stop fires.
+      expect(navigate).toHaveBeenCalledTimes(7);
+      const logs = patches.flatMap((p) => p.appendLog ?? []);
+      const earlyStop = logs.find((l) => l.reason?.startsWith('early stop'));
+      expect(earlyStop).toBeDefined();
+      expect(earlyStop!.reason).toMatch(/remaining 1/);
+    });
+
+    it('threshold = 0 disables early termination', async () => {
+      const links = Array.from({ length: 6 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(
+        links,
+        Array.from({ length: 6 }, () => ({ action: 'skipped:date' as const })),
+      );
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        stopAfterConsecutiveDateSkips: 0,
+        reportPatch: async () => undefined,
+      });
+
+      expect(navigate).toHaveBeenCalledTimes(6);
+    });
+
+    it('uses default threshold (5) when option is omitted', async () => {
+      const links = Array.from({ length: 8 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(
+        links,
+        Array.from({ length: 8 }, () => ({ action: 'skipped:date' as const })),
+      );
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        // no stopAfterConsecutiveDateSkips → default 5
+        reportPatch: async () => undefined,
+      });
+
+      expect(navigate).toHaveBeenCalledTimes(5);
+    });
+  });
+
   it('cleans up the decision listener after each chat (no leak across iterations)', async () => {
     const links = [
       { href: '/chat/a', title: 'A' },

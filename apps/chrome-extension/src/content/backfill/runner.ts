@@ -61,6 +61,19 @@ export interface BackfillRunOptions {
   perChatTimeoutMs: number;
   /** How often to poll lastDownload for changes (ms). */
   pollIntervalMs?: number;
+  /** Stop the rest of the batch after this many consecutive
+   *  `skipped:date` outcomes — both Claude and Gemini sort their non-pinned
+   *  sidebar chats newest-first, so once we cross the date-range boundary
+   *  every remaining non-pinned chat will also be out of range.
+   *
+   *  Pinned chats appear first and are NOT date-ordered, so we use a
+   *  threshold (not single-event) to absorb the case where the user has a
+   *  handful of old pins before reaching the in-range region. Default: 5,
+   *  which is comfortably above typical pin counts.
+   *
+   *  Set to 0 to disable early termination (visit every enumerated chat).
+   *  Other skip reasons (cached, empty, other) reset the counter. */
+  stopAfterConsecutiveDateSkips?: number;
   /** Hooks for testability + reporting. Production wiring sends these patches
    *  through `chrome.runtime.sendMessage` to the background coordinator. */
   reportPatch: (patch: BackfillProviderProgressPatch) => void | Promise<void>;
@@ -72,11 +85,17 @@ export async function runBackfill(
 ): Promise<void> {
   const tag = `${TAG_BASE}[${adapter.logTag}]`;
   const pollIntervalMs = opts.pollIntervalMs ?? 500;
+  const stopAfterConsecutiveDateSkips = opts.stopAfterConsecutiveDateSkips ?? 5;
 
   console.log(tag, 'starting enumerate');
   const links = await adapter.enumerate();
   console.log(tag, 'enumerated', { count: links.length });
   await opts.reportPatch({ total: links.length });
+
+  // Both Claude and Gemini sort their non-pinned sidebar chats newest-first.
+  // After this many consecutive `skipped:date` outcomes we assume we've
+  // crossed the date-range boundary and abort the rest of the batch.
+  let consecutiveDateSkips = 0;
 
   for (let i = 0; i < links.length; i++) {
     if (await isStopRequested()) {
@@ -134,6 +153,7 @@ export async function runBackfill(
           href: link.href,
         };
         await opts.reportPatch({ done: i + 1, appendLog: [outcome] });
+        consecutiveDateSkips = 0;
       } else {
         outcome = {
           at: Date.now(),
@@ -144,6 +164,36 @@ export async function runBackfill(
           reason: result.reason,
         };
         await opts.reportPatch({ skipped: 1, appendLog: [outcome] });
+        if (result.action === 'skipped:date') {
+          consecutiveDateSkips++;
+        } else {
+          // Cached/empty/other shouldn't count toward the early-termination
+          // threshold — only "definitely outside the user's date range" does.
+          consecutiveDateSkips = 0;
+        }
+      }
+
+      if (
+        stopAfterConsecutiveDateSkips > 0 &&
+        consecutiveDateSkips >= stopAfterConsecutiveDateSkips &&
+        i + 1 < links.length
+      ) {
+        const remaining = links.length - (i + 1);
+        const earlyStop: BackfillLogEntry = {
+          at: Date.now(),
+          provider: adapter.provider,
+          status: 'skipped',
+          reason: `early stop: ${consecutiveDateSkips} consecutive out-of-range chats — assuming the remaining ${remaining} are also out of range (sidebar is date-sorted)`,
+        };
+        console.log(tag, 'early termination', {
+          consecutiveDateSkips,
+          remaining,
+        });
+        await opts.reportPatch({
+          currentTitle: null,
+          appendLog: [earlyStop],
+        });
+        return;
       }
     } catch (err) {
       const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -157,6 +207,9 @@ export async function runBackfill(
       };
       console.warn(tag, 'visit failed, logging and continuing', err);
       await opts.reportPatch({ failed: 1, appendLog: [outcome] });
+      // Failure is ambiguous (we couldn't determine date range) — don't
+      // count it toward early termination.
+      consecutiveDateSkips = 0;
     }
 
     if (i < links.length - 1) {
@@ -173,6 +226,10 @@ export async function runBackfill(
 interface WaitResult {
   outcome: 'ok' | 'skipped';
   reason?: string;
+  /** Echoes the orchestrator's terminal action when one was observed —
+   *  used by the runner's early-termination logic to count consecutive
+   *  date-skips precisely (other skip reasons reset the counter). */
+  action?: CaptureDecisionDetail['action'];
 }
 
 /** Resolves as soon as either signal arrives:
@@ -196,11 +253,17 @@ async function waitForCaptureSignal(
   ]);
 
   if (winner.kind === 'decision' && winner.d !== 'timeout') {
-    if (winner.d.action === 'downloaded') return { outcome: 'ok' };
-    return { outcome: 'skipped', reason: winner.d.reason ?? winner.d.action };
+    if (winner.d.action === 'downloaded') {
+      return { outcome: 'ok', action: 'downloaded' };
+    }
+    return {
+      outcome: 'skipped',
+      reason: winner.d.reason ?? winner.d.action,
+      action: winner.d.action,
+    };
   }
   if (winner.kind === 'download' && winner.advanced) {
-    return { outcome: 'ok' };
+    return { outcome: 'ok', action: 'downloaded' };
   }
   // Both channels timed out (or download channel returned false without
   // advance). Wait for the decision channel to also resolve so we don't

@@ -25,6 +25,9 @@ const BACKFILL_TAB_GROUP_COLOR = 'blue' as const;
 const BACKFILL_DEFAULT_MIN_INTERVAL_MS = 4_000;
 const BACKFILL_DEFAULT_MAX_INTERVAL_MS = 6_000;
 const BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS = 20_000;
+// Sidebar is date-sorted past the pinned section, so once 5 consecutive
+// chats fall outside the user's date range, the rest will too.
+const BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS = 5;
 const BACKFILL_LOG_CAP_PER_PROVIDER = 200;
 const PROVIDER_URLS: Record<Provider, string> = {
   claude: 'https://claude.ai/',
@@ -337,6 +340,7 @@ async function startBackfill(
       minIntervalMs: BACKFILL_DEFAULT_MIN_INTERVAL_MS,
       maxIntervalMs: BACKFILL_DEFAULT_MAX_INTERVAL_MS,
       perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
+      stopAfterConsecutiveDateSkips: BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS,
     };
     try {
       const ack = await chrome.tabs.sendMessage(tabId, message);

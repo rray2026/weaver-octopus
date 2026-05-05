@@ -53,6 +53,9 @@ export type BackgroundToContentMessage =
       /** Hard cap per chat — if no download is observed within this window,
        *  the entry is logged as "skipped" and we move on. */
       perChatTimeoutMs: number;
+      /** Stop the rest of the batch after this many consecutive `skipped:date`
+       *  outcomes (sidebar is date-sorted past the pinned section). 0 disables. */
+      stopAfterConsecutiveDateSkips: number;
     }
   | {
       type: 'BACKFILL_STOP';

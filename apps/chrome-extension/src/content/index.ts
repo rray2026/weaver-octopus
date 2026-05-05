@@ -60,6 +60,7 @@ function installBackfillListener(provider: Provider): void {
       minIntervalMs: msg.minIntervalMs,
       maxIntervalMs: msg.maxIntervalMs,
       perChatTimeoutMs: msg.perChatTimeoutMs,
+      stopAfterConsecutiveDateSkips: msg.stopAfterConsecutiveDateSkips,
       reportPatch: (patch: BackfillProviderProgressPatch) =>
         chrome.runtime
           .sendMessage({
