@@ -14,6 +14,7 @@
 // - DOWNLOAD_REQUEST → background → chrome.downloads.download.
 // - messagesToMarkdown / sanitizeFilename / hashString.
 
+import { dispatchCaptureDecision } from './captureEvents.js';
 import { hashString } from './hash.js';
 import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
 import {
@@ -143,17 +144,29 @@ export function startGeminiOrchestrator(
       await hydrationPromise;
       if (extensionInvalidated) return;
 
-      const turns = scrapeTurns(document);
-      if (turns.length === 0) {
-        console.log(tag, 'skip: no turns scraped');
-        return;
-      }
       const convId = getConversationIdFromUrl(location.href);
       if (!convId) {
+        // Welcome page has no id and we'd have nothing useful to dispatch
+        // against — backfill skips welcome links upstream so this only
+        // matters for non-backfill traffic.
         console.log(tag, 'skip: welcome page (no conversation id)');
         return;
       }
+      const turns = scrapeTurns(document);
+      if (turns.length === 0) {
+        console.log(tag, 'skip: no turns scraped');
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'skipped:empty',
+          reason: 'no turns rendered (page may be blank or selectors broken)',
+        });
+        return;
+      }
       if (isLastTurnIncomplete(turns, document)) {
+        // Don't dispatch — orchestrator will retry on the next mutation when
+        // the model finishes streaming. Backfill runner's timeout catches
+        // the (rare) case where streaming never resolves.
         console.log(tag, 'skip: last turn still streaming');
         return;
       }
@@ -202,6 +215,12 @@ export function startGeminiOrchestrator(
           baseline,
           todayPrompts: today.prompts.length,
         });
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'skipped:date',
+          reason: 'no turns in today slice',
+        });
         return;
       }
 
@@ -209,6 +228,12 @@ export function startGeminiOrchestrator(
       const inTabKey = `${convId}|${fingerprint}`;
       if (inTabKey === lastExportKey) {
         console.log(tag, 'skip: in-tab fingerprint unchanged');
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'skipped:hash',
+          reason: 'in-tab fingerprint unchanged',
+        });
         return;
       }
       lastExportKey = inTabKey;
@@ -228,6 +253,12 @@ export function startGeminiOrchestrator(
       const prevHash = lastHashByConv.get(hashKey);
       if (prevHash === newHash) {
         console.log(tag, 'skip: hash unchanged across tabs');
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'skipped:hash',
+          reason: 'identical content already downloaded',
+        });
         return;
       }
       lastHashByConv.set(hashKey, newHash);
@@ -256,9 +287,20 @@ export function startGeminiOrchestrator(
         });
         if (!ack || !ack.ok) {
           console.error(tag, 'background rejected DOWNLOAD_REQUEST', ack);
+          dispatchCaptureDecision({
+            provider: 'gemini',
+            conversationId: convId,
+            action: 'skipped:other',
+            reason: `background rejected download${ack?.error ? `: ${ack.error}` : ''}`,
+          });
           return;
         }
         console.log(tag, 'download acked', { downloadId: ack.downloadId });
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'downloaded',
+        });
       } catch (sendErr) {
         if (isExtensionInvalidated(sendErr)) {
           markInvalidated();

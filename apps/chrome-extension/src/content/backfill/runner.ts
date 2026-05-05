@@ -1,20 +1,26 @@
 // Shared backfill runner.
 //
-// A backfill walks the provider's chat sidebar in order, navigating to each
-// chat via SPA push-state and waiting until the *passive* orchestrator has
-// produced a download (lastDownload timestamp advances). Then it pauses for
-// minIntervalMs..maxIntervalMs (jittered) and moves to the next.
+// A backfill walks the provider's chat sidebar in order, navigates to each
+// chat via SPA push-state, and waits for a "capture decision" from the
+// orchestrator: either a download (lastDownload advanced) or a CustomEvent
+// announcing why the orchestrator chose to skip (date out of range, hash
+// already cached, etc.).
 //
-// The runner is provider-agnostic. Each provider passes:
-//   - enumerate(): returns the ordered list of (href, title) pairs
-//   - navigate(link): pushState + click side-effects to load that chat
-//   - matchesProviderFilename(name): used to verify a download was for *us*
+// Two-channel signalling:
+//   1. Window CustomEvent  (`weaver-octopus:capture-decision`) — synchronous
+//      with the orchestrator's decision, fires for both downloads AND skips.
+//      This is what lets out-of-range chats short-circuit instead of
+//      consuming the full per-chat timeout.
+//   2. chrome.storage.local lastDownload — fallback in case the orchestrator
+//      took the download path but the in-tab event was missed (paranoia
+//      guard, also keeps the runner working if the event protocol changes).
 //
-// Why "wait for lastDownload to advance" rather than e.g. listening for the
-// orchestrator's chrome.runtime.sendMessage ack: keeping the runner ignorant
-// of orchestrator internals lets us reuse the same flow across providers and
-// across future orchestrator refactors.
+// Pacing: minIntervalMs..maxIntervalMs jittered between chats.
 
+import {
+  CAPTURE_DECISION_EVENT,
+  type CaptureDecisionDetail,
+} from '../captureEvents.js';
 import type {
   BackfillLogEntry,
   BackfillProviderProgressPatch,
@@ -42,6 +48,9 @@ export interface BackfillProviderAdapter {
   /** Returns true if the lastDownload filename was produced by THIS provider's
    *  orchestrator. Used to avoid cross-provider stealing of "advance" signals. */
   matchesProviderFilename(filename: string): boolean;
+  /** Pulls the conversation id out of a link. Used to match incoming
+   *  CAPTURE_DECISION events to the chat we're currently visiting. */
+  extractConversationId(link: BackfillLink): string | null;
   /** Provider tag for logs. */
   logTag: string;
 }
@@ -88,20 +97,35 @@ export async function runBackfill(
 
     const link = links[i]!;
     const title = link.title ?? '(untitled)';
-    console.log(tag, `visit ${i + 1}/${links.length}`, { title, href: link.href });
+    const expectedConvId = adapter.extractConversationId(link);
+    console.log(tag, `visit ${i + 1}/${links.length}`, {
+      title,
+      href: link.href,
+      convId: expectedConvId,
+    });
     await opts.reportPatch({ currentTitle: title });
 
     const before = await readLastDownload();
     let outcome: BackfillLogEntry;
     try {
+      // Subscribe to decision events BEFORE navigating — orchestrators that
+      // process the URL change synchronously could otherwise fire before we
+      // attach the listener.
+      const decisionPromise = expectedConvId
+        ? waitForDecision(adapter.provider, expectedConvId, opts.perChatTimeoutMs)
+        : null;
+
       await adapter.navigate(link);
-      const advanced = await waitForOurDownload(
+
+      const result = await waitForCaptureSignal(
         adapter,
         before,
+        decisionPromise,
         opts.perChatTimeoutMs,
         pollIntervalMs,
       );
-      if (advanced) {
+
+      if (result.outcome === 'ok') {
         outcome = {
           at: Date.now(),
           provider: adapter.provider,
@@ -117,7 +141,7 @@ export async function runBackfill(
           status: 'skipped',
           title,
           href: link.href,
-          reason: 'no download captured within timeout (cached / out-of-range / empty)',
+          reason: result.reason,
         };
         await opts.reportPatch({ skipped: 1, appendLog: [outcome] });
       }
@@ -146,6 +170,48 @@ export async function runBackfill(
   console.log(tag, 'done');
 }
 
+interface WaitResult {
+  outcome: 'ok' | 'skipped';
+  reason?: string;
+}
+
+/** Resolves as soon as either signal arrives:
+ *   - matching CAPTURE_DECISION event (best-case ~100ms after navigate)
+ *   - lastDownload advances with our provider's filename (paranoia fallback)
+ * Or times out and returns "skipped" with a generic timeout reason. */
+async function waitForCaptureSignal(
+  adapter: BackfillProviderAdapter,
+  before: LastDownload | undefined,
+  decisionPromise: Promise<CaptureDecisionDetail | 'timeout'> | null,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<WaitResult> {
+  const downloadPromise = waitForOurDownload(adapter, before, timeoutMs, pollMs);
+  // Race the two channels — whoever resolves first wins.
+  const winner = await Promise.race([
+    decisionPromise
+      ? decisionPromise.then((d) => ({ kind: 'decision' as const, d }))
+      : new Promise<never>(() => undefined),
+    downloadPromise.then((advanced) => ({ kind: 'download' as const, advanced })),
+  ]);
+
+  if (winner.kind === 'decision' && winner.d !== 'timeout') {
+    if (winner.d.action === 'downloaded') return { outcome: 'ok' };
+    return { outcome: 'skipped', reason: winner.d.reason ?? winner.d.action };
+  }
+  if (winner.kind === 'download' && winner.advanced) {
+    return { outcome: 'ok' };
+  }
+  // Both channels timed out (or download channel returned false without
+  // advance). Wait for the decision channel to also resolve so we don't
+  // leak its listener — but cap at the same overall timeout.
+  if (decisionPromise) await decisionPromise.catch(() => undefined);
+  return {
+    outcome: 'skipped',
+    reason: 'no decision/download captured within timeout (cached / empty)',
+  };
+}
+
 async function waitForOurDownload(
   adapter: BackfillProviderAdapter,
   before: LastDownload | undefined,
@@ -168,6 +234,37 @@ async function waitForOurDownload(
     await sleep(pollMs);
   }
   return false;
+}
+
+/** Listens for an in-tab CaptureDecision event matching the (provider, convId)
+ *  we expect for the chat just navigated to. Resolves with the event detail,
+ *  or 'timeout' after timeoutMs. Always cleans up its listener. */
+function waitForDecision(
+  provider: Provider,
+  conversationId: string,
+  timeoutMs: number,
+): Promise<CaptureDecisionDetail | 'timeout'> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const onEvent = (ev: Event): void => {
+      const detail = (ev as CustomEvent<CaptureDecisionDetail>).detail;
+      if (!detail) return;
+      if (detail.provider !== provider) return;
+      if (detail.conversationId !== conversationId) return;
+      if (settled) return;
+      settled = true;
+      window.removeEventListener(CAPTURE_DECISION_EVENT, onEvent);
+      clearTimeout(timer);
+      resolve(detail);
+    };
+    window.addEventListener(CAPTURE_DECISION_EVENT, onEvent);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener(CAPTURE_DECISION_EVENT, onEvent);
+      resolve('timeout');
+    }, timeoutMs);
+  });
 }
 
 async function readLastDownload(): Promise<LastDownload | undefined> {

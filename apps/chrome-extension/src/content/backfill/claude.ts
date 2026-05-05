@@ -45,6 +45,14 @@ export const claudeBackfillAdapter: BackfillProviderAdapter = {
     // under weaver-octopus/<date>/. The provider tag is unambiguous.
     return /\[claude\]/.test(filename);
   },
+
+  extractConversationId(link): string | null {
+    // The runner uses this to match incoming CAPTURE_DECISION events. The
+    // Claude orchestrator reports the full UUID, which is exactly what's in
+    // the /chat/<uuid> path segment we already normalised.
+    const m = link.href.match(/\/chat\/([0-9a-fA-F-]{36})/);
+    return m ? m[1]! : null;
+  },
 };
 
 export function collectClaudeChatLinks(root: Document | Element = document): BackfillLink[] {

@@ -1,3 +1,4 @@
+import { dispatchCaptureDecision } from './captureEvents.js';
 import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
 import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
@@ -118,6 +119,12 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       const conv = parser.parseConversation(msg.body, location.href, fallbackTitle);
       if (!conv) {
         console.log(tag, 'skip: parser returned null (body shape mismatch)');
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: msg.conversationId,
+          action: 'skipped:other',
+          reason: 'parser returned null',
+        });
         return;
       }
       console.log(tag, 'parsed', { title: conv.title, messageCount: conv.messages.length });
@@ -135,6 +142,12 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       });
       if (inRange.length === 0) {
         console.log(tag, 'skip: no messages in date range');
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: msg.conversationId,
+          action: 'skipped:date',
+          reason: `no messages within ${range.label}`,
+        });
         return;
       }
 
@@ -144,6 +157,12 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       if (prevHash === newHash) {
         console.log(tag, 'skip: hash unchanged (already downloaded)', {
           hash: newHash.slice(0, 8),
+        });
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: msg.conversationId,
+          action: 'skipped:hash',
+          reason: 'identical content already downloaded',
         });
         return;
       }
@@ -172,9 +191,20 @@ export function startOrchestrator(parser: ProviderParser): () => void {
         });
         if (!ack || !ack.ok) {
           console.error(tag, 'background rejected DOWNLOAD_REQUEST', ack);
+          dispatchCaptureDecision({
+            provider: 'claude',
+            conversationId: msg.conversationId,
+            action: 'skipped:other',
+            reason: `background rejected download${ack?.error ? `: ${ack.error}` : ''}`,
+          });
           return;
         }
         console.log(tag, 'download acked by background', { downloadId: ack.downloadId });
+        dispatchCaptureDecision({
+          provider: 'claude',
+          conversationId: msg.conversationId,
+          action: 'downloaded',
+        });
       } catch (sendErr) {
         if (isExtensionInvalidated(sendErr)) {
           markInvalidated();

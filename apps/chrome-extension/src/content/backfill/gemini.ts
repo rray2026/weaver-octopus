@@ -40,6 +40,13 @@ export const geminiBackfillAdapter: BackfillProviderAdapter = {
   matchesProviderFilename(filename: string): boolean {
     return /\[gemini\]/.test(filename);
   },
+
+  extractConversationId(link): string | null {
+    // The Gemini orchestrator reports `getConversationIdFromUrl(href)` —
+    // the segment after /app/ — which is exactly what normalizeAppHref
+    // already canonicalised into "/app/<id>".
+    return normalizeAppHref(link.href)?.replace(/^\/app\//, '') ?? null;
+  },
 };
 
 export function collectGeminiChatLinks(root: Document | Element = document): BackfillLink[] {
