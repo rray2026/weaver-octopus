@@ -260,13 +260,18 @@ describe('intercept (MAIN-world fetch patch)', () => {
       expect(headers).toEqual({ 'anthropic-anonymous-id': 'anon' });
     });
 
-    it('does not capture headers when the response is not ok', async () => {
+    it('captures headers even when the response is non-ok (the headers are still valid)', async () => {
       baseFetch.mockResolvedValueOnce(makeResponse({}, { ok: false, status: 403 }));
       await window.fetch(`/api/organizations`, {
         headers: { 'anthropic-anonymous-id': 'anon' },
       });
-      await new Promise((r) => setTimeout(r, 30));
-      expect(findHeaders(capture.messages)).toBeUndefined();
+      await capture.waitFor(1);
+      // Capturing pre-response means we don't need a 2xx to populate the
+      // cache — useful when the user's first attempt is a fetch-mode call
+      // that itself 403s and we still want the headers from it.
+      expect(findHeaders(capture.messages)).toEqual({
+        'anthropic-anonymous-id': 'anon',
+      });
     });
 
     it('does not post API_HEADERS when no auth-flavoured headers are present', async () => {

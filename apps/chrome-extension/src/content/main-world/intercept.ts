@@ -17,9 +17,9 @@ const ANY_API_URL_RE = /\/api\//;
 // Only forward "auth-ish" headers — never the request body, content-length,
 // or anything else that's specific to the original call.
 //   - anthropic-* / x-* / sec-fetch-* (prefix matches)
-//   - exactly "accept" or "accept-language" (the wider Accept header is
-//     usually content-type-specific; we drop the rest).
-const HEADER_KEEP_RE = /^(?:anthropic-|x-|sec-fetch-|accept-language$|accept$)/i;
+//   - exactly "authorization" / "accept" / "accept-language"
+const HEADER_KEEP_RE =
+  /^(?:anthropic-|x-|sec-fetch-|authorization$|accept(?:-language)?$)/i;
 
 const SOURCE = 'weaver-octopus:intercept';
 const PATCH_FLAG = '__weaverFetchPatched';
@@ -41,6 +41,13 @@ let seq = 0;
   window.fetch = async function patchedFetch(
     ...args: Parameters<typeof fetch>
   ): Promise<Response> {
+    // Headers can be captured up-front (no response needed). Capture EARLY
+    // so even calls that fail or hang have a chance to populate the cache.
+    try {
+      maybeCaptureHeaders(args[0], args[1]);
+    } catch (err) {
+      console.warn(TAG, 'maybeCaptureHeaders threw (swallowed)', err);
+    }
     const response = await origFetch(...args);
     try {
       maybeForward(args[0], args[1], response);
@@ -51,6 +58,20 @@ let seq = 0;
   };
 })();
 
+function maybeCaptureHeaders(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+): void {
+  const url = inferUrl(input);
+  if (!url || !ANY_API_URL_RE.test(url)) return;
+  const headers = extractAuthHeaders(input, init);
+  if (!headers || Object.keys(headers).length === 0) return;
+  window.postMessage(
+    { source: SOURCE, type: 'API_HEADERS', headers },
+    location.origin,
+  );
+}
+
 function maybeForward(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -58,19 +79,6 @@ function maybeForward(
 ): void {
   const url = inferUrl(input);
   if (!url) return;
-
-  // First: opportunistically capture identity headers from ANY successful
-  // /api/* call. The fetch-mode orchestrator + backfill adapter need these
-  // to make their own requests work; without them Claude's API returns 403.
-  if (ANY_API_URL_RE.test(url) && response.ok) {
-    const headers = extractAuthHeaders(input, init);
-    if (headers && Object.keys(headers).length > 0) {
-      window.postMessage(
-        { source: SOURCE, type: 'API_HEADERS', headers },
-        location.origin,
-      );
-    }
-  }
 
   const match = url.match(CONVERSATION_URL_RE);
   if (!match) return;

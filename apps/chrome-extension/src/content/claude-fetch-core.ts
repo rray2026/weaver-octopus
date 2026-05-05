@@ -244,10 +244,30 @@ async function authedFetch(
   // Claude expects Accept: application/json on these endpoints; harmless if
   // the cached set already includes it.
   if (!headers.has('accept')) headers.set('accept', 'application/json');
-  return fetchImpl(url, {
-    credentials: 'include',
-    headers,
-  });
+
+  const cachedKeys = Object.keys(cached ?? {});
+  if (cachedKeys.length === 0) {
+    console.warn(
+      '[weaver:claude-fetch-core] no cached anthropic-* headers — first ' +
+        'visit a chat in intercept mode so the cache populates, otherwise ' +
+        "Claude's API will reject this fetch with 403",
+    );
+  } else {
+    console.log('[weaver:claude-fetch-core] authedFetch', {
+      url,
+      sendingHeaders: cachedKeys.sort(),
+    });
+  }
+
+  const res = await fetchImpl(url, { credentials: 'include', headers });
+  if (!res.ok) {
+    console.warn('[weaver:claude-fetch-core] non-ok response', {
+      url,
+      status: res.status,
+      sentHeaderKeys: cachedKeys.sort(),
+    });
+  }
+  return res;
 }
 
 async function loadHashes(): Promise<Record<string, string>> {
