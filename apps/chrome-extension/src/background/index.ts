@@ -1,12 +1,35 @@
-import type { ContentToBackgroundMessage, LastDownload } from '../types/index.js';
+import type {
+  BackfillLogEntry,
+  BackfillProgress,
+  BackfillProviderProgress,
+  BackfillProviderProgressPatch,
+  BackgroundToContentMessage,
+  ContentToBackgroundMessage,
+  LastDownload,
+  Provider,
+} from '../types/index.js';
 
 const LAST_DOWNLOAD_KEY = 'lastDownload';
+const BACKFILL_PROGRESS_KEY = 'backfillProgress';
+const BACKFILL_STOP_FLAG = 'backfillStopRequested';
 const TAG = '[weaver:bg]';
 const MYACTIVITY_GEMINI_URL = 'https://myactivity.google.com/product/gemini';
 const MYACTIVITY_QUERY_PATTERN = 'https://myactivity.google.com/product/gemini*';
 // myactivity is heavyweight to load. Throttle reload requests so a hot
 // stream of Gemini DOM mutations doesn't thrash the activity tab.
 const MYACTIVITY_REFRESH_THROTTLE_MS = 30_000;
+const BACKFILL_TAB_GROUP_TITLE = 'Weaver Octopus Backfill';
+// chrome.tabGroups Color values — type alias is named differently across
+// @types/chrome versions, so we keep this as a plain string the API accepts.
+const BACKFILL_TAB_GROUP_COLOR = 'blue' as const;
+const BACKFILL_DEFAULT_MIN_INTERVAL_MS = 4_000;
+const BACKFILL_DEFAULT_MAX_INTERVAL_MS = 6_000;
+const BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS = 20_000;
+const BACKFILL_LOG_CAP_PER_PROVIDER = 200;
+const PROVIDER_URLS: Record<Provider, string> = {
+  claude: 'https://claude.ai/',
+  gemini: 'https://gemini.google.com/app',
+};
 
 let seq = 0;
 let lastActivityRefreshAt = 0;
@@ -15,7 +38,12 @@ chrome.runtime.onInstalled.addListener((details) => {
   console.log(TAG, 'onInstalled', { reason: details.reason });
 });
 
-chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sender, sendResponse) => {
+type IncomingMessage =
+  | ContentToBackgroundMessage
+  | { type: 'START_BACKFILL'; providers: Provider[] }
+  | { type: 'STOP_BACKFILL' };
+
+chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResponse) => {
   const id = ++seq;
   const tag = `${TAG}#${id}`;
   console.log(tag, 'recv', {
@@ -24,8 +52,15 @@ chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sende
     senderTabId: sender.tab?.id,
   });
 
-  if (!isAllowedSender(sender.tab?.url)) {
-    console.warn(tag, 'reject: sender not in host_permissions', { url: sender.tab?.url });
+  // Popup-originated messages have no sender.tab — they come from the
+  // extension's own context (default_popup). Allow those by checking for
+  // matching URL prefix; otherwise enforce host_permissions on tabs.
+  const fromPopup = !sender.tab && (sender.url?.startsWith(chrome.runtime.getURL('')) ?? false);
+  if (!fromPopup && !isAllowedSender(sender.tab?.url)) {
+    console.warn(tag, 'reject: sender not in host_permissions', {
+      url: sender.tab?.url,
+      sUrl: sender.url,
+    });
     sendResponse({ ok: false, error: 'unauthorized sender' });
     return false;
   }
@@ -57,6 +92,39 @@ chrome.runtime.onMessage.addListener((message: ContentToBackgroundMessage, sende
         console.error(tag, 'refreshActivityTab failed', err);
         sendResponse({ ok: false, error: String(err) });
       });
+    return true;
+  }
+
+  if (message.type === 'START_BACKFILL') {
+    if (!fromPopup) {
+      sendResponse({ ok: false, error: 'START_BACKFILL only allowed from popup' });
+      return false;
+    }
+    startBackfill(message.providers, tag)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+
+  if (message.type === 'STOP_BACKFILL') {
+    if (!fromPopup) {
+      sendResponse({ ok: false, error: 'STOP_BACKFILL only allowed from popup' });
+      return false;
+    }
+    stopBackfill(tag)
+      .then((res) => sendResponse(res))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
+    return true;
+  }
+
+  if (message.type === 'BACKFILL_PROGRESS') {
+    if (!sender.tab) {
+      sendResponse({ ok: false, error: 'progress must come from a tab' });
+      return false;
+    }
+    applyBackfillPatch(message.provider, message.patch, tag)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
 
@@ -166,3 +234,245 @@ async function refreshActivityTab(tag: string): Promise<RefreshActivityResult> {
 export function __resetActivityThrottleForTests(): void {
   lastActivityRefreshAt = 0;
 }
+
+// ─── Backfill coordinator ────────────────────────────────────────────────────
+
+async function startBackfill(
+  providers: Provider[],
+  tag: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (providers.length === 0) return { ok: false, error: 'no providers selected' };
+
+  const existing = await readProgress();
+  if (existing.state === 'running') {
+    return { ok: false, error: 'a backfill is already running' };
+  }
+
+  // Reset state.
+  await chrome.storage.local.remove(BACKFILL_STOP_FLAG);
+  const fresh: BackfillProgress = {
+    state: 'running',
+    startedAt: Date.now(),
+    perProvider: Object.fromEntries(
+      providers.map((p) => [p, makeEmptyProviderProgress() satisfies BackfillProviderProgress]),
+    ) as BackfillProgress['perProvider'],
+  };
+  await writeProgress(fresh);
+
+  // Open / focus a tab per provider, all under one tab group.
+  const tabIds: number[] = [];
+  const providerTabs = new Map<Provider, number>();
+  for (const p of providers) {
+    try {
+      const tabId = await ensureProviderTab(p);
+      tabIds.push(tabId);
+      providerTabs.set(p, tabId);
+    } catch (err) {
+      console.error(tag, 'ensureProviderTab failed', p, err);
+      await patchProvider(p, {
+        appendLog: [
+          {
+            at: Date.now(),
+            provider: p,
+            status: 'failed',
+            reason: `failed to open tab: ${String(err)}`,
+          },
+        ],
+      });
+    }
+  }
+
+  if (tabIds.length === 0) {
+    await mutateProgress((prog) => ({
+      ...prog,
+      state: 'error',
+      finishedAt: Date.now(),
+      errorMessage: 'no provider tabs could be opened',
+    }));
+    return { ok: false, error: 'no tabs opened' };
+  }
+
+  try {
+    const groupId = await chrome.tabs.group({ tabIds });
+    await chrome.tabGroups.update(groupId, {
+      title: BACKFILL_TAB_GROUP_TITLE,
+      color: BACKFILL_TAB_GROUP_COLOR,
+      collapsed: false,
+    });
+    console.log(tag, 'tab group ready', { groupId, tabs: tabIds });
+  } catch (err) {
+    console.warn(tag, 'tab grouping failed (continuing)', err);
+  }
+
+  // Each tab runs independently. We dispatch in parallel; aggregate state is
+  // tracked via BACKFILL_PROGRESS messages from each content script. When all
+  // adapters report no currentTitle and the report queue drains, we mark done.
+  const dispatches = Array.from(providerTabs.entries()).map(async ([provider, tabId]) => {
+    // Wait for tab content script to be ready. Newly-created tabs may take
+    // a few seconds to load and inject content.js.
+    await waitForTabComplete(tabId, 30_000).catch(() => undefined);
+    const message: BackgroundToContentMessage = {
+      type: 'BACKFILL_RUN',
+      provider,
+      minIntervalMs: BACKFILL_DEFAULT_MIN_INTERVAL_MS,
+      maxIntervalMs: BACKFILL_DEFAULT_MAX_INTERVAL_MS,
+      perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
+    };
+    try {
+      const ack = await chrome.tabs.sendMessage(tabId, message);
+      console.log(tag, 'backfill provider done', { provider, ack });
+    } catch (err) {
+      console.error(tag, 'sendMessage to backfill tab failed', { provider, tabId, err });
+      await patchProvider(provider, {
+        appendLog: [
+          {
+            at: Date.now(),
+            provider,
+            status: 'failed',
+            reason: `dispatch to tab failed: ${String(err)}`,
+          },
+        ],
+      });
+    }
+  });
+
+  // Don't await dispatches — return immediately so popup can render. Mark
+  // done when all complete.
+  Promise.allSettled(dispatches).then(async () => {
+    await mutateProgress((prog) => ({
+      ...prog,
+      state: prog.state === 'stopping' ? 'idle' : 'done',
+      finishedAt: Date.now(),
+    }));
+    await chrome.storage.local.remove(BACKFILL_STOP_FLAG);
+    console.log(tag, 'all backfill dispatches finished');
+  });
+
+  return { ok: true };
+}
+
+async function stopBackfill(tag: string): Promise<{ ok: boolean }> {
+  console.log(tag, 'stop requested');
+  await chrome.storage.local.set({ [BACKFILL_STOP_FLAG]: true });
+  await mutateProgress((prog) => ({ ...prog, state: 'stopping' }));
+  // Best-effort: also send STOP messages so any tabs listening can short-circuit.
+  // The runner already polls the storage flag, so this is belt-and-suspenders.
+  for (const provider of ['claude', 'gemini'] as const) {
+    try {
+      const tabs = await chrome.tabs.query({ url: providerUrlPattern(provider) });
+      for (const t of tabs) {
+        if (t.id != null)
+          chrome.tabs.sendMessage(t.id, { type: 'BACKFILL_STOP' }).catch(() => undefined);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return { ok: true };
+}
+
+async function ensureProviderTab(provider: Provider): Promise<number> {
+  const pattern = providerUrlPattern(provider);
+  const tabs = await chrome.tabs.query({ url: pattern });
+  // Prefer an existing tab so we don't duplicate browsing context. If the
+  // user is mid-conversation we won't disturb them — but we'll still navigate
+  // them through history during the backfill (acceptable: that's the feature).
+  if (tabs.length > 0 && tabs[0]!.id != null) return tabs[0]!.id;
+  const created = await chrome.tabs.create({ url: PROVIDER_URLS[provider], active: false });
+  if (created.id == null) throw new Error('chrome.tabs.create returned no id');
+  return created.id;
+}
+
+function providerUrlPattern(provider: Provider): string {
+  return provider === 'claude' ? 'https://claude.ai/*' : 'https://gemini.google.com/*';
+}
+
+async function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const t = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (t?.status === 'complete') return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+function makeEmptyProviderProgress(): BackfillProviderProgress {
+  return { total: 0, done: 0, failed: 0, skipped: 0, log: [] };
+}
+
+async function readProgress(): Promise<BackfillProgress> {
+  const items = await chrome.storage.local.get(BACKFILL_PROGRESS_KEY);
+  const raw = items[BACKFILL_PROGRESS_KEY] as BackfillProgress | undefined;
+  return (
+    raw ?? {
+      state: 'idle',
+      perProvider: {},
+    }
+  );
+}
+
+async function writeProgress(prog: BackfillProgress): Promise<void> {
+  await chrome.storage.local.set({ [BACKFILL_PROGRESS_KEY]: prog });
+}
+
+async function mutateProgress(
+  fn: (prev: BackfillProgress) => BackfillProgress,
+): Promise<BackfillProgress> {
+  const prev = await readProgress();
+  const next = fn(prev);
+  await writeProgress(next);
+  return next;
+}
+
+async function applyBackfillPatch(
+  provider: Provider,
+  patch: BackfillProviderProgressPatch,
+  tag: string,
+): Promise<void> {
+  console.log(tag, 'BACKFILL_PROGRESS', { provider, patch });
+  await patchProvider(provider, patch);
+}
+
+async function patchProvider(
+  provider: Provider,
+  patch: BackfillProviderProgressPatch,
+): Promise<void> {
+  await mutateProgress((prog) => {
+    const cur = prog.perProvider[provider] ?? makeEmptyProviderProgress();
+    const merged: BackfillProviderProgress = {
+      ...cur,
+      total: patch.total ?? cur.total,
+      done: patch.done ?? cur.done,
+      failed: cur.failed + (patch.failed ?? 0),
+      skipped: cur.skipped + (patch.skipped ?? 0),
+      currentTitle:
+        patch.currentTitle === undefined
+          ? cur.currentTitle
+          : patch.currentTitle === null
+            ? undefined
+            : patch.currentTitle,
+      log: appendLog(cur.log, patch.appendLog),
+    };
+    return {
+      ...prog,
+      perProvider: { ...prog.perProvider, [provider]: merged },
+    };
+  });
+}
+
+function appendLog(
+  prev: BackfillLogEntry[],
+  toAppend: BackfillLogEntry[] | undefined,
+): BackfillLogEntry[] {
+  if (!toAppend || toAppend.length === 0) return prev;
+  const out = [...prev, ...toAppend];
+  if (out.length <= BACKFILL_LOG_CAP_PER_PROVIDER) return out;
+  return out.slice(out.length - BACKFILL_LOG_CAP_PER_PROVIDER);
+}
+
+/** Test-only export so unit tests can inspect the merger logic without
+ *  going through chrome.storage. */
+export const __backfillInternals = {
+  appendLog,
+  makeEmptyProviderProgress,
+};

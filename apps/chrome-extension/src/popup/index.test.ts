@@ -29,6 +29,18 @@ const POPUP_DOM = `
   <p id="status">Loading…</p>
   <span id="cache-count"></span>
   <button id="reset-btn" type="button">Reset cache</button>
+
+  <div>
+    <input type="checkbox" id="provider-claude" checked />
+    <input type="checkbox" id="provider-gemini" checked />
+  </div>
+  <button id="backfill-start" type="button">开始</button>
+  <button id="backfill-stop" type="button" disabled>停止</button>
+  <span id="backfill-state"></span>
+  <div id="progress-block" hidden>
+    <div id="progress-providers"></div>
+    <div id="log-list"></div>
+  </div>
 `;
 
 async function loadPopup(): Promise<void> {

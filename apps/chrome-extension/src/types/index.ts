@@ -29,6 +29,33 @@ export type ContentToBackgroundMessage =
        *  list. Background opens or reloads the myactivity tab in the
        *  background (does not steal focus). Throttled to once per 30s. */
       type: 'REFRESH_ACTIVITY';
+    }
+  | {
+      /** Backfill content script reports progress / logs to the background
+       *  coordinator, which aggregates per-provider state into storage so the
+       *  popup can render live updates and survive close+reopen. */
+      type: 'BACKFILL_PROGRESS';
+      provider: Provider;
+      patch: BackfillProviderProgressPatch;
+    };
+
+export type BackgroundToContentMessage =
+  | {
+      /** Sent by the background to a provider's content script to enter
+       *  backfill mode. Content script enumerates sidebar chats, navigates
+       *  through them, and waits for the orchestrator to emit a download
+       *  per chat. */
+      type: 'BACKFILL_RUN';
+      provider: Provider;
+      /** Min ms to wait between chats. Actual wait is jittered up to maxIntervalMs. */
+      minIntervalMs: number;
+      maxIntervalMs: number;
+      /** Hard cap per chat — if no download is observed within this window,
+       *  the entry is logged as "skipped" and we move on. */
+      perChatTimeoutMs: number;
+    }
+  | {
+      type: 'BACKFILL_STOP';
     };
 
 export interface LastDownload {
@@ -44,4 +71,50 @@ export interface DateFilter {
   start?: string;
   /** YYYY-MM-DD (local), inclusive end day. Only meaningful when type === 'range'. */
   end?: string;
+}
+
+// ─── Backfill ────────────────────────────────────────────────────────────────
+
+export type BackfillState = 'idle' | 'running' | 'stopping' | 'done' | 'error';
+
+export type BackfillEntryStatus = 'ok' | 'skipped' | 'failed';
+
+export interface BackfillLogEntry {
+  at: number;
+  provider: Provider;
+  title?: string;
+  href?: string;
+  status: BackfillEntryStatus;
+  reason?: string;
+}
+
+export interface BackfillProviderProgress {
+  total: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  /** Title of the chat currently being processed. Cleared at end. */
+  currentTitle?: string;
+  /** Capped to MAX_LOG_PER_PROVIDER entries (newest-first). */
+  log: BackfillLogEntry[];
+}
+
+/** A partial that the background applies onto the persisted provider state.
+ *  Patches are additive — log entries are appended, counters are absolute. */
+export interface BackfillProviderProgressPatch {
+  total?: number;
+  done?: number;
+  failed?: number;
+  skipped?: number;
+  currentTitle?: string | null;
+  appendLog?: BackfillLogEntry[];
+}
+
+export interface BackfillProgress {
+  state: BackfillState;
+  startedAt?: number;
+  finishedAt?: number;
+  /** Last fatal error or sticky note shown to the user. */
+  errorMessage?: string;
+  perProvider: { [k in Provider]?: BackfillProviderProgress };
 }

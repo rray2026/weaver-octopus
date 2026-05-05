@@ -281,3 +281,52 @@ describe('background REFRESH_ACTIVITY', () => {
     expect(mock.tabs.query).not.toHaveBeenCalled();
   });
 });
+
+describe('background appendLog', () => {
+  let appendLog: typeof import('./index.js').__backfillInternals.appendLog;
+
+  beforeEach(async () => {
+    installChromeMock();
+    vi.resetModules();
+    const mod = await import('./index.js');
+    appendLog = mod.__backfillInternals.appendLog;
+  });
+
+  afterEach(() => {
+    uninstallChromeMock();
+  });
+
+  it('returns prev unchanged when appendLog is empty/undefined', () => {
+    const prev = [
+      { at: 1, provider: 'claude' as const, status: 'ok' as const },
+    ];
+    expect(appendLog(prev, undefined)).toBe(prev);
+    expect(appendLog(prev, [])).toBe(prev);
+  });
+
+  it('appends entries to the end', () => {
+    const prev = [{ at: 1, provider: 'claude' as const, status: 'ok' as const }];
+    const next = [{ at: 2, provider: 'claude' as const, status: 'failed' as const }];
+    expect(appendLog(prev, next)).toEqual([...prev, ...next]);
+  });
+
+  it('keeps only the most recent entries when the cap is exceeded', () => {
+    // The cap is 200; build a history of 220 entries and append 5 more.
+    const prev = Array.from({ length: 220 }, (_, i) => ({
+      at: i,
+      provider: 'claude' as const,
+      status: 'ok' as const,
+    }));
+    const next = Array.from({ length: 5 }, (_, i) => ({
+      at: 1000 + i,
+      provider: 'claude' as const,
+      status: 'ok' as const,
+    }));
+    const result = appendLog(prev, next);
+    expect(result).toHaveLength(200);
+    // Newest preserved
+    expect(result[result.length - 1]!.at).toBe(1004);
+    // Oldest dropped
+    expect(result[0]!.at).toBeGreaterThan(0);
+  });
+});

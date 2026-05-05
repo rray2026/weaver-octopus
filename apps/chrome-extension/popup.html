@@ -7,7 +7,7 @@
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        width: 320px;
+        width: 360px;
         font-family: system-ui, -apple-system, sans-serif;
         font-size: 13px;
         background: #fafafa;
@@ -18,7 +18,7 @@
       h2 {
         font-size: 12px;
         font-weight: 600;
-        margin: 12px 0 6px;
+        margin: 14px 0 6px;
         color: #555;
         text-transform: uppercase;
         letter-spacing: 0.04em;
@@ -86,11 +86,99 @@
       #reset-btn:hover { background: #fdf0f0; border-color: #b22; }
       #reset-btn:disabled { opacity: 0.5; cursor: default; }
       #cache-count { font-size: 11px; color: #666; }
+
+      /* Backfill section */
+      .backfill {
+        margin-top: 14px;
+        padding-top: 10px;
+        border-top: 1px solid #eaeaea;
+      }
+      .providers {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+      .providers label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+      }
+      .backfill-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      #backfill-start, #backfill-stop {
+        padding: 5px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      #backfill-start {
+        background: #2b65d8;
+        color: #fff;
+        border-color: #2b65d8;
+      }
+      #backfill-start:hover:not(:disabled) { background: #234fb1; }
+      #backfill-start:disabled { background: #d0d0d0; border-color: #d0d0d0; cursor: default; }
+      #backfill-stop {
+        background: #fff;
+        color: #b22;
+        border-color: #d0d0d0;
+      }
+      #backfill-stop:hover:not(:disabled) { background: #fdf0f0; border-color: #b22; }
+      #backfill-stop:disabled { opacity: 0.4; cursor: default; }
+      .progress-block {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #555;
+        line-height: 1.5;
+      }
+      .progress-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .progress-bar {
+        flex: 1;
+        height: 4px;
+        background: #eaeaea;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .progress-bar > span {
+        display: block;
+        height: 100%;
+        background: #2b65d8;
+        transition: width 0.3s ease;
+      }
+      .log-list {
+        max-height: 120px;
+        overflow-y: auto;
+        margin-top: 6px;
+        padding: 4px 6px;
+        background: #fff;
+        border: 1px solid #eaeaea;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #555;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+      }
+      .log-list .log-entry {
+        padding: 1px 0;
+        word-break: break-all;
+      }
+      .log-list .log-entry.failed { color: #b22; }
+      .log-list .log-entry.skipped { color: #888; }
     </style>
   </head>
   <body>
     <h1>Weaver Octopus</h1>
-    <h2>Date filter</h2>
+    <h2>Date filter (Claude only)</h2>
     <div class="shortcuts" id="shortcuts">
       <button data-type="today">今天</button>
       <button data-type="yesterday">昨天</button>
@@ -108,6 +196,27 @@
       <span id="cache-count"></span>
       <button id="reset-btn" type="button">Reset cache</button>
     </div>
+
+    <section class="backfill">
+      <h2>批量回填</h2>
+      <div class="providers">
+        <label><input type="checkbox" id="provider-claude" checked /> Claude</label>
+        <label><input type="checkbox" id="provider-gemini" checked /> Gemini</label>
+      </div>
+      <div class="backfill-actions">
+        <button id="backfill-start" type="button">开始</button>
+        <button id="backfill-stop" type="button" disabled>停止</button>
+        <span id="backfill-state" style="font-size:11px;color:#888;"></span>
+      </div>
+      <div class="progress-block" id="progress-block" hidden>
+        <div id="progress-providers"></div>
+        <details style="margin-top:6px;">
+          <summary style="cursor:pointer;font-size:11px;color:#555;">查看日志</summary>
+          <div class="log-list" id="log-list"></div>
+        </details>
+      </div>
+    </section>
+
     <script type="module" src="./src/popup/index.ts"></script>
   </body>
 </html>
