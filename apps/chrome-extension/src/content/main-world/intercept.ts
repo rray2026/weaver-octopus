@@ -1,3 +1,5 @@
+export {}; // Marks the file as a module so tests can side-effect-import it.
+
 // Runs in the page's MAIN world (see manifest.json content_scripts entry).
 // Hooks window.fetch to passively observe Claude's own conversation requests
 // and forwards the JSON body to the isolated content script via postMessage.

@@ -70,7 +70,7 @@ function isAllowedSender(url: string | undefined): boolean {
   return patterns.some((p: string) => matchesHostPattern(url, p));
 }
 
-function matchesHostPattern(url: string, pattern: string): boolean {
+export function matchesHostPattern(url: string, pattern: string): boolean {
   // Minimal subset of MV3 match patterns: scheme://host/path. We only need
   // exact-host or wildcard-port matching for our tests.
   try {
