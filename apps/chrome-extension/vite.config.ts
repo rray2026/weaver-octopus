@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -19,11 +20,35 @@ const buildIdPlugin: Plugin = {
   },
 };
 
+// In dev we also need to talk to the localhost dev-log-server (cross-origin
+// from the extension's perspective — extension origin vs http://localhost).
+// MV3 SW fetch requires a matching host_permission, so patch the built
+// manifest after Vite copies it from public/. This patch never runs for
+// production builds.
+const localhostManifestPatch: Plugin = {
+  name: 'weaver-dev-manifest-patch',
+  apply: 'build',
+  closeBundle() {
+    const path = resolve(__dirname, 'dist', 'manifest.json');
+    let json: { host_permissions?: string[] };
+    try {
+      json = JSON.parse(readFileSync(path, 'utf-8'));
+    } catch {
+      return;
+    }
+    const existing = new Set(json.host_permissions ?? []);
+    existing.add('http://127.0.0.1/*');
+    existing.add('http://localhost/*');
+    json.host_permissions = Array.from(existing);
+    writeFileSync(path, JSON.stringify(json, null, 2));
+  },
+};
+
 export default defineConfig({
   define: {
     __WEAVER_DEV__: JSON.stringify(isDev),
   },
-  plugins: isDev ? [buildIdPlugin] : [],
+  plugins: isDev ? [buildIdPlugin, localhostManifestPatch] : [],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

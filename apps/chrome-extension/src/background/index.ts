@@ -1,4 +1,6 @@
 import { devOnInstalled, startDevAutoReload } from './dev-autoreload.js';
+import { startDevCommandPoller } from '../dev/command-poller.js';
+import { startDevLogForwarder } from '../dev/log-forwarder.js';
 import type {
   BackfillLogEntry,
   BackfillProgress,
@@ -49,7 +51,36 @@ chrome.runtime.onInstalled.addListener((details) => {
 // Dev-only: poll dist/build_id.txt and chrome.runtime.reload() on change
 // so each `WEAVER_DEV=1 pnpm dev` rebuild lands automatically. The const
 // gate ensures the import + call are dropped from production bundles.
-if (__WEAVER_DEV__) startDevAutoReload();
+if (__WEAVER_DEV__) {
+  startDevAutoReload();
+  // Forward console.* into the localhost dev-log-server so Claude Code can
+  // tail .dev-runtime.log without DevTools.
+  startDevLogForwarder('background');
+  // Pull commands queued by `pnpm dev:trigger` and dispatch them via the
+  // same internal helpers the popup uses. SW-to-self chrome.runtime
+  // messages aren't delivered, so we hand the helpers in directly.
+  startDevCommandPoller({
+    startBackfill: (opts) =>
+      startBackfill(opts.providers, '[dev]', {
+        intervalMinSec: opts.intervalMinSec,
+        intervalMaxSec: opts.intervalMaxSec,
+      }),
+    stopBackfill: () => stopBackfill('[dev]'),
+    resetCache: () =>
+      chrome.storage.local.remove([
+        'convHashes',
+        'lastDownload',
+        'claudeApiHeaders',
+        'claudeOrgId',
+        'todayGemini',
+        BACKFILL_PROGRESS_KEY,
+        BACKFILL_STOP_FLAG,
+      ]),
+    setClaudeMode: (mode) => chrome.storage.local.set({ claudeCaptureMode: mode }),
+    openTab: (url) => chrome.tabs.create({ url, active: true }),
+    reloadExtension: () => chrome.runtime.reload(),
+  });
+}
 
 type IncomingMessage =
   | ContentToBackgroundMessage
@@ -64,6 +95,22 @@ type IncomingMessage =
   | { type: 'STOP_BACKFILL' };
 
 chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResponse) => {
+  // Dev-mode: content/popup forwarders ship console.* lines through the SW
+  // because they can't reach localhost themselves. Relay to the dev-log
+  // server. Tree-shaken in production.
+  if (__WEAVER_DEV__ && (message as { type?: string })?.type === '__DEV_LOG__') {
+    const payload = (message as { payload?: string }).payload;
+    if (typeof payload === 'string') {
+      void fetch('http://127.0.0.1:9876/log', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: payload,
+      }).catch(() => undefined);
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
+
   const id = ++seq;
   const tag = `${TAG}#${id}`;
   console.log(tag, 'recv', {

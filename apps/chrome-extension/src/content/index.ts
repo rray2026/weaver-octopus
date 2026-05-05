@@ -7,6 +7,11 @@ import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
+// NOTE: content scripts are classic scripts that can't load Rollup chunks.
+// Importing the dev log-forwarder here would force a shared chunk and
+// break content.js loading. Content-script logs stay visible in the page's
+// own DevTools console — that's enough for debugging. The dev-log file
+// only mirrors background SW + popup output.
 import type {
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,

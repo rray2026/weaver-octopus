@@ -1,4 +1,5 @@
 import { computeRange, loadFilter, saveFilter } from '../dateFilter.js';
+import { startDevLogForwarder } from '../dev/log-forwarder.js';
 import type {
   BackfillProgress,
   BackfillProviderProgress,
@@ -382,4 +383,5 @@ export function sanitizeInterval(
   return { minSec, maxSec };
 }
 
+if (__WEAVER_DEV__) startDevLogForwarder('popup');
 init();

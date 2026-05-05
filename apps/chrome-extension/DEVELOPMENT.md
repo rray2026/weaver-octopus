@@ -40,18 +40,66 @@ Output: `dist/` — load this folder as an unpacked extension in Chrome.
 ## Hot-reload dev workflow (no manual ↺ + tab refresh)
 
 ```bash
-# In one terminal: vite watch + emit a fresh dist/build_id.txt every build
-WEAVER_DEV=1 pnpm --filter @weaver-octopus/chrome-extension dev
+# Terminal A: vite watch + emit dist/build_id.txt + patch manifest with
+#             http://127.0.0.1/* host permission so the SW can talk to the
+#             dev-log-server (next terminal).
+pnpm --filter @weaver-octopus/chrome-extension dev:hot
+
+# Terminal B: HTTP loopback server. Receives forwarded console.* lines and
+#             serves a /command queue the dev-trigger CLI writes to.
+pnpm --filter @weaver-octopus/chrome-extension dev:logs
+
+# Terminal C (optional): tail the runtime log
+tail -F apps/chrome-extension/.dev-runtime.log
 ```
 
-Background SW polls `build_id.txt` every 2s; on change it
-`chrome.runtime.reload()`s itself, then the new SW refreshes every tab
-matched by `host_permissions`. End result: edit → save → ~2-3s later
-the tab is on the freshly-built code, no clicking required.
+Edit → save → ~2–3s later the extension auto-reloads, matched tabs
+auto-refresh, and every `console.log/info/warn/error` from the SW,
+content scripts and popup ends up in `.dev-runtime.log` as JSONL,
+keyed by `source` (e.g. `background`, `content:claude.ai`, `popup`).
 
-Production builds (`pnpm build` without `WEAVER_DEV`) leave the dev
-constant `__WEAVER_DEV__` false, so the poller / installer hook are
-tree-shaken away — no extra requests, no extra storage keys.
+### Driving specific scenarios from outside the browser
+
+The same dev-log-server hosts a small `/command` queue the SW polls
+every 1.5s. Push a JSON command into it and the SW dispatches the same
+helpers the popup uses:
+
+```bash
+# Start a backfill on Claude only with zero pacing
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"start-backfill","providers":["claude"],"intervalMinSec":0,"intervalMaxSec":0}'
+
+# Stop the in-flight batch
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"stop-backfill"}'
+
+# Wipe every cache key (convHashes / lastDownload / claudeApiHeaders /
+# claudeOrgId / todayGemini / backfillProgress)
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"reset-cache"}'
+
+# Switch capture mode
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"set-claude-mode","mode":"fetch"}'
+
+# Open a URL in a new tab (e.g. force a SPA fetch)
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"open","url":"https://claude.ai/chat/abc..."}'
+
+# Force a full extension reload (rarely needed — auto-reload covers most)
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger '{"action":"reload"}'
+```
+
+Each command is logged into `.dev-runtime.log` along with whatever the
+SW prints while executing it, so a dev session looks like:
+1. trigger an action
+2. read the log (just `tail -F` or the Read tool)
+3. see what the orchestrator decided
+
+Production builds (`pnpm build`) leave `__WEAVER_DEV__` false, so the
+auto-reload poller, log forwarder, command poller, and the
+http://127.0.0.1/* permission are all absent — no extra requests, no
+extra storage keys, no dev surface in the shipped bundle.
 
 ### Other speed-up knobs
 

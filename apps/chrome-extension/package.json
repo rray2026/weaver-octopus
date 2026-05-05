@@ -5,11 +5,14 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
+    "dev:hot": "WEAVER_DEV=1 vite build --watch",
+    "dev:logs": "node scripts/dev-log-server.mjs",
+    "dev:trigger": "node scripts/dev-trigger.mjs",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "pnpm build && playwright test",
-    "clean": "rimraf dist *.tsbuildinfo"
+    "clean": "rimraf dist *.tsbuildinfo .dev-runtime.log"
   },
   "dependencies": {
     "@weaver-octopus/utils": "workspace:*"
