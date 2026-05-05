@@ -21,7 +21,13 @@ interface ApiHeadersMessage {
   headers: Record<string, string>;
 }
 
-type InterceptedMessage = ConversationMessage | ApiHeadersMessage;
+interface StaleMessage {
+  source: typeof INTERCEPT_SOURCE;
+  type: 'STALE_CONVERSATION';
+  conversationId: string;
+}
+
+type InterceptedMessage = ConversationMessage | ApiHeadersMessage | StaleMessage;
 
 /** Returns a Response-like stub matching the surface intercept.ts uses. */
 function makeResponse(body: unknown, opts: { ok?: boolean; status?: number } = {}): Response {
@@ -142,23 +148,26 @@ describe('intercept (MAIN-world fetch patch)', () => {
     expect(capture.messages).toHaveLength(0);
   });
 
-  it('skips non-GET requests to a conversation URL', async () => {
+  it('does not forward a CONVERSATION on non-GET requests (those go via STALE_CONVERSATION)', async () => {
     baseFetch.mockResolvedValueOnce(makeResponse({ chat_messages: [] }));
     await window.fetch(CONV_URL_PATH, { method: 'POST', body: '{}' });
     await new Promise((r) => setTimeout(r, 30));
 
-    expect(capture.messages).toHaveLength(0);
+    const conv = capture.messages.find((m) => m.type === 'CONVERSATION');
+    expect(conv).toBeUndefined();
   });
 
   it('reads method off Request objects (not just init)', async () => {
     baseFetch.mockResolvedValueOnce(makeResponse({ chat_messages: [] }));
     // Pass a Request-like object with method=DELETE — intercept must consult
-    // input.method rather than defaulting to GET.
+    // input.method rather than defaulting to GET. CONVERSATION must NOT
+    // fire (DELETE is non-GET); STALE_CONVERSATION may.
     const req = { url: CONV_URL_PATH, method: 'DELETE' } as Request;
     await window.fetch(req);
     await new Promise((r) => setTimeout(r, 30));
 
-    expect(capture.messages).toHaveLength(0);
+    const conv = capture.messages.find((m) => m.type === 'CONVERSATION');
+    expect(conv).toBeUndefined();
   });
 
   it('skips when the response is not ok (e.g. 401/500)', async () => {
@@ -281,6 +290,43 @@ describe('intercept (MAIN-world fetch patch)', () => {
       });
       await new Promise((r) => setTimeout(r, 30));
       expect(findHeaders(capture.messages)).toBeUndefined();
+    });
+
+    it('dispatches STALE_CONVERSATION on a POST to a chat URL (e.g. send message)', async () => {
+      baseFetch.mockResolvedValueOnce(makeResponse({}));
+      await window.fetch(`${CONV_URL_PATH}/completion`, {
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'hi' }),
+      });
+      await capture.waitFor(1);
+      const stale = capture.messages.find(
+        (m) => m.type === 'STALE_CONVERSATION',
+      ) as StaleMessage | undefined;
+      expect(stale).toBeDefined();
+      expect(stale!.conversationId).toBe(CONV_UUID);
+    });
+
+    it('dispatches STALE_CONVERSATION on a PATCH (e.g. rename)', async () => {
+      baseFetch.mockResolvedValueOnce(makeResponse({}));
+      await window.fetch(CONV_URL_PATH, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'New title' }),
+      });
+      await capture.waitFor(1);
+      const stale = capture.messages.find(
+        (m) => m.type === 'STALE_CONVERSATION',
+      ) as StaleMessage | undefined;
+      expect(stale?.conversationId).toBe(CONV_UUID);
+    });
+
+    it('does NOT dispatch STALE_CONVERSATION on a GET (those are handled by CONVERSATION)', async () => {
+      baseFetch.mockResolvedValueOnce(
+        makeResponse({ uuid: CONV_UUID, chat_messages: [] }),
+      );
+      await window.fetch(CONV_URL_PATH);
+      await capture.waitFor(1);
+      const stale = capture.messages.find((m) => m.type === 'STALE_CONVERSATION');
+      expect(stale).toBeUndefined();
     });
 
     it('reads headers from a Request-style input as well as init', async () => {

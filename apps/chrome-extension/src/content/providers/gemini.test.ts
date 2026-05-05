@@ -75,8 +75,28 @@ describe('findMatchIndexAfter', () => {
     expect(findMatchIndexAfter('tell me about quantum', ['tell me about…'], -1)).toBe(0);
   });
 
-  it('matches when local prompt is a substring of the activity entry', () => {
-    expect(findMatchIndexAfter('quantum', ['tell me about quantum mechanics'], -1)).toBe(0);
+  it('does NOT match when chat prompt is a substring of an un-truncated activity entry', () => {
+    // Earlier looser behaviour treated this as a match — but the prompts are
+    // genuinely different; the user typed "quantum" today, but the activity
+    // entry is some other (longer) prompt that happens to contain "quantum".
+    expect(findMatchIndexAfter('quantum', ['tell me about quantum mechanics'], -1)).toBe(-1);
+  });
+
+  it('does NOT match a short generic prompt against a long similar activity entry', () => {
+    // Regression: "hi" used to match anything starting with "hi" (e.g.
+    // yesterday's "hi I have a question..."), pulling pre-today turns into
+    // the slice. With strict matching this no longer fires.
+    expect(findMatchIndexAfter('hi', ['hi I have a question'], -1)).toBe(-1);
+  });
+
+  it('still matches when the truncated activity prefix is substantial (≥ 8 chars)', () => {
+    expect(findMatchIndexAfter('explain transformers in detail', ['explain transformers…'], -1))
+      .toBe(0);
+  });
+
+  it('does NOT match when the truncated activity prefix is short (avoids false positives)', () => {
+    // "hi…" → 'hi' is only 2 chars normalised. Refuse to claim a match.
+    expect(findMatchIndexAfter('hi I have a question', ['hi…'], -1)).toBe(-1);
   });
 
   it('respects the `after` exclusive lower bound', () => {

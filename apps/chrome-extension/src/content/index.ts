@@ -3,6 +3,7 @@ import { geminiBackfillAdapter } from './backfill/gemini.js';
 import { runBackfill } from './backfill/runner.js';
 import { startClaudeFetchOrchestrator } from './claude-fetch-orchestrator.js';
 import { startClaudeHeadersCache } from './claude-headers-cache.js';
+import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
@@ -26,6 +27,10 @@ try {
     // unconditionally (even in 'intercept' mode) so that switching to
     // 'fetch' mode later finds a fresh header set.
     startClaudeHeadersCache();
+    // Listen for SPA mutations on chat URLs (send-message, rename, delete)
+    // and invalidate the per-conversation hash so the next observed GET
+    // produces a fresh download. Otherwise hash dedup suppresses updates.
+    startClaudeStaleListener();
     void startClaudeWithConfiguredMode();
     installBackfillListener('claude');
   } else if (host === 'gemini.google.com' || host.endsWith('.gemini.google.com')) {

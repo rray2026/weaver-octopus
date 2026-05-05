@@ -15,6 +15,7 @@
 
 import { processClaudeChatById } from './claude-fetch-core.js';
 import { dispatchCaptureDecision } from './captureEvents.js';
+import { onClaudeStale } from './claude-stale.js';
 import type { ProviderParser } from './providers/types.js';
 
 const TAG = '[weaver:claude-fetch]';
@@ -49,8 +50,25 @@ export function startClaudeFetchOrchestrator(
   // Initial poke — content script may load on a chat URL already.
   schedule();
 
+  // When the SPA writes to a chat (send message, rename, ...), the cached
+  // hash for that conversation has just been invalidated by claude-stale.
+  // If the user is currently viewing that same chat, the URL won't change
+  // — so push-state hooks won't fire. Schedule a delayed re-fetch instead
+  // so the new content lands without requiring a page reload.
+  const STALE_REFETCH_DELAY_MS = 3_000;
+  const detachStaleListener = onClaudeStale((conversationId) => {
+    const match = location.pathname.match(CHAT_PATH_RE);
+    const currentChatId = match ? match[1]! : null;
+    if (currentChatId !== conversationId) return;
+    console.log(TAG, 'stale on current chat, scheduling refetch', { conversationId });
+    // Reset the in-tab dedup so the next handle_url_change actually processes.
+    lastSeenChatId = null;
+    setTimeout(() => schedule(), STALE_REFETCH_DELAY_MS);
+  });
+
   return () => {
     detachHistoryHooks();
+    detachStaleListener();
     if (pendingTrigger) clearTimeout(pendingTrigger);
   };
 

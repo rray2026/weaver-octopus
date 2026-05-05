@@ -9,6 +9,12 @@ export {}; // Marks the file as a module so tests can side-effect-import it.
 
 const CONVERSATION_URL_RE =
   /\/api\/organizations\/[0-9a-f-]{36}\/chat_conversations\/([0-9a-f-]{36})(?:[/?]|$)/;
+// Any URL touching a specific chat (including sub-paths like /completion,
+// /title, /append). Used to detect mutations so the orchestrator can
+// invalidate dedup state when the user sends a message in a chat we've
+// already downloaded.
+const CHAT_TOUCHES_URL_RE =
+  /\/api\/organizations\/[0-9a-f-]{36}\/chat_conversations\/([0-9a-f-]{36})(?:[/?]|$)/;
 // Capture identity headers from any Claude API call. Required by the
 // 'fetch' capture mode — Claude's API rejects requests that don't carry
 // these (anthropic-anonymous-id / -client-platform / -device-id / etc) with
@@ -79,6 +85,25 @@ function maybeForward(
 ): void {
   const url = inferUrl(input);
   if (!url) return;
+
+  // Detect mutating requests (POST/PATCH/DELETE) on chat URLs and broadcast
+  // a STALE_CONVERSATION event. Listeners in the ISOLATED world invalidate
+  // the per-conversation hash so the next observed GET produces a fresh
+  // download (otherwise hash dedup suppresses updated content). We use the
+  // broader CHAT_TOUCHES_URL_RE so sub-paths like /completion, /title also
+  // count as mutations.
+  const touchMatch = url.match(CHAT_TOUCHES_URL_RE);
+  if (touchMatch) {
+    const method = inferMethod(input, init);
+    if (method !== 'GET') {
+      const conversationId = touchMatch[1]!;
+      console.log(TAG, 'observed mutation', { method, conversationId, url });
+      window.postMessage(
+        { source: SOURCE, type: 'STALE_CONVERSATION', conversationId },
+        location.origin,
+      );
+    }
+  }
 
   const match = url.match(CONVERSATION_URL_RE);
   if (!match) return;

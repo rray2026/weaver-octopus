@@ -132,6 +132,13 @@ export function computeTodaySlice(
   return turns.slice(cutFrom);
 }
 
+/** True if myactivity visibly truncated this prompt (it ends with one or
+ *  more '…' / '...' before whitespace). We honour prefix matching only in
+ *  this case — see `findMatchIndexAfter`. */
+function isTruncated(raw: string): boolean {
+  return /(?:…|\.{3,})\s*$/.test(raw.trim());
+}
+
 function normalizeForMatch(s: string): string {
   return (s || '')
     .replace(/\s+/g, '')
@@ -140,9 +147,20 @@ function normalizeForMatch(s: string): string {
     .toLowerCase();
 }
 
-/** Gemini's myactivity often truncates long prompts ("…"), so we accept any
- *  prefix-or-substring match in either direction. Returns the index of the
- *  match in todayPrompts, strictly greater than `after`, or -1 if none. */
+/** Returns the smallest index > `after` whose prompt matches `prompt`, or
+ *  -1 if none.
+ *
+ *  Match rules (deliberately strict — earlier versions also allowed
+ *  `t.startsWith(u)` and substring containment in either direction, which
+ *  caused yesterday's chats to false-match today's myactivity entries
+ *  whenever the user asked similar / generic questions across days):
+ *
+ *  - exact match (after whitespace/case/trailing-ellipsis normalisation)
+ *  - chat prompt starts with myactivity prompt AND the myactivity entry
+ *    is visibly truncated ("…" / "..."), where the matching prefix is
+ *    substantial (≥ 8 normalised chars). This is the only case where
+ *    Gemini's myactivity legitimately differs from the chat-rendered
+ *    version. */
 export function findMatchIndexAfter(
   prompt: string,
   todayPrompts: string[],
@@ -151,11 +169,11 @@ export function findMatchIndexAfter(
   const u = normalizeForMatch(prompt);
   if (!u) return -1;
   for (let i = after + 1; i < todayPrompts.length; i++) {
-    const t = normalizeForMatch(todayPrompts[i] ?? '');
+    const rawT = todayPrompts[i] ?? '';
+    const t = normalizeForMatch(rawT);
     if (!t) continue;
     if (u === t) return i;
-    if (u.startsWith(t) || t.startsWith(u)) return i;
-    if (u.includes(t) || t.includes(u)) return i;
+    if (isTruncated(rawT) && t.length >= 8 && u.startsWith(t)) return i;
   }
   return -1;
 }
