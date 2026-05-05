@@ -311,6 +311,26 @@ async function startBackfill(
     // Wait for tab content script to be ready. Newly-created tabs may take
     // a few seconds to load and inject content.js.
     await waitForTabComplete(tabId, 30_000).catch(() => undefined);
+
+    // Reused tabs may carry a stale content.js from before the extension was
+    // updated. Ping first; reload+rewait if the listener is missing or
+    // version-mismatched.
+    const ready = await ensureContentScriptReady(tabId, tag, provider);
+    if (!ready) {
+      await patchProvider(provider, {
+        appendLog: [
+          {
+            at: Date.now(),
+            provider,
+            status: 'failed',
+            reason:
+              'content script not responding (tab may need manual refresh, or the page is on a login/SSO redirect)',
+          },
+        ],
+      });
+      return;
+    }
+
     const message: BackgroundToContentMessage = {
       type: 'BACKFILL_RUN',
       provider,
@@ -394,6 +414,80 @@ async function waitForTabComplete(tabId: number, timeoutMs: number): Promise<voi
     if (t?.status === 'complete') return;
     await new Promise((r) => setTimeout(r, 500));
   }
+}
+
+/** Verifies the freshest content.js (BACKFILL_PING handler, matching version)
+ *  is loaded. If the ping fails or the tab carries a stale build, reload the
+ *  tab and re-ping. Returns true on success, false if even the reloaded tab
+ *  refuses to respond (e.g. a login/SSO redirect off the matched origin). */
+async function ensureContentScriptReady(
+  tabId: number,
+  tag: string,
+  provider: Provider,
+): Promise<boolean> {
+  const expectedVersion = chrome.runtime.getManifest().version;
+  const expectedId = chrome.runtime.id;
+
+  const ping = async (): Promise<{ matched: boolean; reason?: string }> => {
+    try {
+      const ack = (await chrome.tabs.sendMessage(tabId, {
+        type: 'BACKFILL_PING',
+      } satisfies BackgroundToContentMessage)) as
+        | { ok?: boolean; provider?: Provider; version?: string; extensionId?: string }
+        | undefined;
+      if (!ack || !ack.ok) return { matched: false, reason: 'no ack' };
+      if (ack.provider !== provider) {
+        return { matched: false, reason: `provider mismatch (${ack.provider})` };
+      }
+      // Version is best-effort. If the content script's chrome.runtime is
+      // invalidated, version may be undefined — treat that as stale.
+      if (!ack.version) {
+        return { matched: false, reason: 'stale runtime (version unknown)' };
+      }
+      if (ack.version !== expectedVersion) {
+        return {
+          matched: false,
+          reason: `version mismatch (tab=${ack.version}, ext=${expectedVersion})`,
+        };
+      }
+      if (ack.extensionId && ack.extensionId !== expectedId) {
+        return { matched: false, reason: 'extension id mismatch' };
+      }
+      return { matched: true };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      return { matched: false, reason };
+    }
+  };
+
+  const first = await ping();
+  if (first.matched) {
+    console.log(tag, 'content script ping ok', { tabId, provider, version: expectedVersion });
+    return true;
+  }
+  console.log(tag, 'ping miss → reloading tab to inject fresh content.js', {
+    tabId,
+    provider,
+    reason: first.reason,
+  });
+  try {
+    await chrome.tabs.reload(tabId, { bypassCache: false });
+  } catch (err) {
+    console.warn(tag, 'tab reload failed', err);
+    return false;
+  }
+  await waitForTabComplete(tabId, 30_000).catch(() => undefined);
+  // content_scripts run at document_idle — give the listener a moment to register.
+  await new Promise((r) => setTimeout(r, 1500));
+  const second = await ping();
+  if (!second.matched) {
+    console.warn(tag, 'content script still unresponsive after reload', {
+      tabId,
+      provider,
+      reason: second.reason,
+    });
+  }
+  return second.matched;
 }
 
 function makeEmptyProviderProgress(): BackfillProviderProgress {

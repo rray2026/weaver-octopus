@@ -56,7 +56,28 @@ export type BackgroundToContentMessage =
     }
   | {
       type: 'BACKFILL_STOP';
+    }
+  | {
+      /** Lightweight liveness probe. Background sends this before BACKFILL_RUN
+       *  to verify the freshest content script is loaded — if the tab carries
+       *  a stale build (extension was updated mid-session) the listener for
+       *  this message simply isn't registered and chrome.tabs.sendMessage
+       *  rejects, signalling the background to reload the tab. */
+      type: 'BACKFILL_PING';
     };
+
+export interface BackfillPingAck {
+  ok: true;
+  provider: Provider;
+  /** Manifest version of the *content script's* extension context. Used by
+   *  the background to detect a tab carrying a stale build after the
+   *  extension was reloaded — the new background will read a newer version
+   *  from its own manifest and force a tab reload to refresh content.js. */
+  version?: string;
+  /** Extension id of the content script's runtime — guards against confusion
+   *  if multiple Weaver-Octopus-flavoured extensions are installed at once. */
+  extensionId?: string;
+}
 
 export interface LastDownload {
   filename: string;

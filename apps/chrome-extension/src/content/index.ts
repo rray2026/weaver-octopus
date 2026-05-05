@@ -35,6 +35,20 @@ try {
 function installBackfillListener(provider: Provider): void {
   let running = false;
   chrome.runtime.onMessage.addListener((msg: BackgroundToContentMessage, _sender, sendResponse) => {
+    if (msg.type === 'BACKFILL_PING') {
+      let version: string | undefined;
+      let extensionId: string | undefined;
+      try {
+        version = chrome.runtime.getManifest().version;
+        extensionId = chrome.runtime.id;
+      } catch {
+        // chrome.runtime.* throws "Extension context invalidated" after the
+        // extension was reloaded mid-session. Reply anyway — the background's
+        // version check below will then detect the mismatch and reload.
+      }
+      sendResponse({ ok: true, provider, version, extensionId });
+      return false;
+    }
     if (msg.type !== 'BACKFILL_RUN' || msg.provider !== provider) return undefined;
     if (running) {
       sendResponse({ ok: false, error: 'backfill already running' });
