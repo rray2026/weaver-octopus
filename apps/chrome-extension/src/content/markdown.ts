@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../types/index.js';
+import type { ChatMessage, Provider } from '../types/index.js';
 
 export function todayDateString(): string {
   return new Date().toLocaleDateString('en-CA');
@@ -16,11 +16,12 @@ export function messagesToMarkdown(
   title: string,
   url: string,
   rangeLabel?: string,
+  provider: Provider = 'claude',
 ): string {
   const lines: string[] = [
     `# ${title}`,
     '',
-    `**Provider**: claude`,
+    `**Provider**: ${provider}`,
     `**Captured**: ${todayDateString()}`,
   ];
   if (rangeLabel) lines.push(`**Range**: ${rangeLabel}`);

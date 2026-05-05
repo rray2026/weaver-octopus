@@ -188,3 +188,96 @@ describe('background onMessage flow', () => {
     expect(mock.storage.local[LAST_DOWNLOAD_KEY]).toBeUndefined();
   });
 });
+
+describe('background REFRESH_ACTIVITY', () => {
+  let mock: ChromeMock;
+  let resetThrottle: () => void;
+
+  beforeEach(async () => {
+    mock = installChromeMock({
+      manifest: {
+        host_permissions: [
+          'https://claude.ai/*',
+          'https://gemini.google.com/*',
+          'https://myactivity.google.com/*',
+        ],
+      },
+    });
+    vi.resetModules();
+    const mod = await import('./index.js');
+    resetThrottle = mod.__resetActivityThrottleForTests;
+    resetThrottle();
+  });
+
+  afterEach(() => {
+    uninstallChromeMock();
+  });
+
+  it('opens a background myactivity tab when none is open, from a Gemini sender', async () => {
+    const listener = getMessageListener(mock);
+
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(ack.ok).toBe(true);
+    expect(mock.tabs.query).toHaveBeenCalledTimes(1);
+    expect(mock.tabs.create).toHaveBeenCalledTimes(1);
+    const createArg = mock.tabs.create.mock.calls[0]![0] as {
+      url: string;
+      active: boolean;
+    };
+    expect(createArg.url).toBe('https://myactivity.google.com/product/gemini');
+    expect(createArg.active).toBe(false);
+    expect(mock.tabs.reload).not.toHaveBeenCalled();
+  });
+
+  it('reloads the existing myactivity tab when one is already open', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 42, url: 'https://myactivity.google.com/product/gemini' },
+    ]);
+    const listener = getMessageListener(mock);
+
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(ack.ok).toBe(true);
+    expect(mock.tabs.create).not.toHaveBeenCalled();
+    expect(mock.tabs.reload).toHaveBeenCalledWith(42);
+  });
+
+  it('throttles repeated refresh requests within the 30s window', async () => {
+    const listener = getMessageListener(mock);
+
+    const first = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+    const second = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({ ok: false });
+    expect(mock.tabs.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects REFRESH_ACTIVITY from a sender outside host_permissions', async () => {
+    const listener = getMessageListener(mock);
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://evil.example.com/page',
+    );
+    expect(ack.ok).toBe(false);
+    expect(mock.tabs.query).not.toHaveBeenCalled();
+  });
+});

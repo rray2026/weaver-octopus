@@ -97,4 +97,10 @@ describe('messagesToMarkdown', () => {
     expect(md).not.toContain('## User');
     expect(md).not.toContain('## Assistant');
   });
+
+  it('renders Provider line as gemini when provider is gemini', () => {
+    const md = messagesToMarkdown([msg('user', 'q')], 'T', 'u', undefined, 'gemini');
+    expect(md).toContain('**Provider**: gemini');
+    expect(md).not.toContain('**Provider**: claude');
+  });
 });

@@ -12,6 +12,7 @@ export default defineConfig({
         background: resolve(__dirname, 'src/background/index.ts'),
         content: resolve(__dirname, 'src/content/index.ts'),
         intercept: resolve(__dirname, 'src/content/main-world/intercept.ts'),
+        myactivity: resolve(__dirname, 'src/myactivity/index.ts'),
         popup: resolve(__dirname, 'popup.html'),
       },
       output: {

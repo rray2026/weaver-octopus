@@ -1,6 +1,17 @@
 # Chrome Extension — Development & Debugging Guide
 
-Manifest V3 extension that monitors `claude.ai` and auto-downloads today's chat as Markdown.
+Manifest V3 extension that monitors `claude.ai` and `gemini.google.com` and
+auto-downloads today's chat as Markdown.
+
+| Provider | Capture mechanism | Date filtering |
+|----------|------------------|----------------|
+| Claude   | MAIN-world fetch interception | popup-controlled range (today / yesterday / last 7 days / this week / custom) |
+| Gemini   | DOM scraping + MutationObserver | always today (cross-referenced against `myactivity.google.com/product/gemini`) |
+
+Gemini ignores the popup's date filter — Gemini's DOM has no per-message
+timestamp, so the only reliable "this turn happened today" signal is the
+prompt list scraped from myactivity. The extension auto-opens
+`myactivity.google.com/product/gemini` in a background tab on demand.
 
 ## Build
 
@@ -34,19 +45,24 @@ apps/chrome-extension/
 │   └── manifest.json            # Manifest V3 config
 ├── src/
 │   ├── types/index.ts           # Shared TypeScript types
-│   ├── background/index.ts      # Service worker — handles DOWNLOAD_REQUEST
+│   ├── background/index.ts      # Service worker — handles DOWNLOAD_REQUEST + REFRESH_ACTIVITY
 │   ├── content/
-│   │   ├── index.ts             # Entry — detects claude.ai, starts orchestrator
-│   │   ├── orchestrator.ts      # Consumes intercepted payloads → markdown → download
+│   │   ├── index.ts             # Entry — branches on hostname (claude.ai vs gemini.google.com)
+│   │   ├── orchestrator.ts      # Claude: consumes intercepted payloads → markdown → download
+│   │   ├── gemini-orchestrator.ts # Gemini: MutationObserver → DOM scrape → markdown → download
 │   │   ├── hash.ts              # SHA-256 via SubtleCrypto (per-conversation dedup)
 │   │   ├── markdown.ts          # ChatMessage[] → Markdown string + filename utilities
 │   │   ├── main-world/
-│   │   │   └── intercept.ts     # MAIN-world fetch monkey-patch (zero extra requests)
+│   │   │   └── intercept.ts     # MAIN-world fetch monkey-patch (Claude only, zero extra requests)
 │   │   └── providers/
 │   │       ├── types.ts         # ProviderParser interface
-│   │       └── claude.ts        # Claude API payload → ConversationData
+│   │       ├── claude.ts        # Claude API payload → ConversationData
+│   │       └── gemini.ts        # Pure DOM scraping helpers for Gemini
+│   ├── myactivity/
+│   │   ├── index.ts             # Content script for myactivity.google.com/product/gemini
+│   │   └── scraper.ts           # Pure helpers — find Today header, extract prompts
 │   └── popup/
-│       └── index.ts             # Popup — shows last download
+│       └── index.ts             # Popup — shows last download (Claude filter only)
 ├── popup.html
 └── vite.config.ts
 ```
@@ -83,6 +99,35 @@ claude.ai tab
                   │
                   ▼
         ~/Downloads/weaver-octopus/YYYY-MM-DD/[claude] <title>-<convId8>.md
+```
+
+For Gemini the path is parallel but driven by the DOM, not by intercepted fetches:
+
+```
+gemini.google.com tab
+  └─ content.js (ISOLATED, run_at: document_idle)
+        startGeminiOrchestrator()
+          ├─ MutationObserver on body  → debounce 1.5s → runExport()
+          ├─ history.pushState/replaceState patched → reset state on chat switch
+          └─ runExport()
+                ├─ scrapeTurns(document)        — selector list w/ fallback
+                ├─ getConversationIdFromUrl()   — null on welcome page → skip
+                ├─ isLastTurnIncomplete()       — wait if model is still streaming
+                ├─ split turns: [history before this tab opened] vs [newSession in this tab]
+                ├─ chrome.storage.local.get('todayGemini')
+                │     missing/stale → chrome.runtime.sendMessage({type:'REFRESH_ACTIVITY'})
+                │     background opens/reloads myactivity tab in background → wait → retry
+                ├─ computeTodaySlice(history, todayPrompts)  — match user prompts in newest-first order
+                ├─ slice = existingToday ∪ newSession
+                ├─ in-tab fingerprint dedup + cross-tab SHA-256 (key 'gemini:<convId>')
+                └─ chrome.runtime.sendMessage({ type:'DOWNLOAD_REQUEST', filename, content })
+
+myactivity.google.com/product/gemini tab
+  └─ myactivity.js (ISOLATED, run_at: document_idle)
+        MutationObserver → debounce 1.2s → collectTodayPrompts(document)
+          → chrome.storage.local.set({ todayGemini: { date, prompts } })
+
+        ~/Downloads/weaver-octopus/YYYY-MM-DD/[gemini] <title>-<convId8>.md
 ```
 
 ## Key design decisions

@@ -46,6 +46,11 @@ export interface ChromeMock {
     download: ReturnType<typeof vi.fn>;
     changeListeners: Set<DownloadChangeListener>;
   };
+  tabs: {
+    query: ReturnType<typeof vi.fn>;
+    create: ReturnType<typeof vi.fn>;
+    reload: ReturnType<typeof vi.fn>;
+  };
 }
 
 export interface ChromeMockOptions {
@@ -125,6 +130,15 @@ export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
         removeListener: (cb: DownloadChangeListener) => downloadChangeListeners.delete(cb),
       },
     },
+    tabs: {
+      query: vi.fn(async () => [] as Array<{ id: number; url: string }>),
+      create: vi.fn(async (info: { url: string; active?: boolean }) => ({
+        id: 99,
+        url: info.url,
+        active: info.active ?? false,
+      })),
+      reload: vi.fn(async (_tabId: number) => undefined),
+    },
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -141,6 +155,11 @@ export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
     downloads: {
       download: chromeStub.downloads.download,
       changeListeners: downloadChangeListeners,
+    },
+    tabs: {
+      query: chromeStub.tabs.query,
+      create: chromeStub.tabs.create,
+      reload: chromeStub.tabs.reload,
     },
   };
 }
