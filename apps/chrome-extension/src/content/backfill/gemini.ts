@@ -6,7 +6,11 @@
 // "显示更多" / "Show more" pane before clicking Backfill so the items are
 // in the DOM.
 
-import type { BackfillLink, BackfillProviderAdapter } from './runner.js';
+import type {
+  BackfillLink,
+  BackfillNavigateContext,
+  BackfillProviderAdapter,
+} from './runner.js';
 
 const CONVERSATION_LINK_SELECTORS = [
   // Common "real" anchors with conversation ids.
@@ -27,7 +31,11 @@ export const geminiBackfillAdapter: BackfillProviderAdapter = {
     return collectGeminiChatLinks().slice(0, MAX_CHATS);
   },
 
-  async navigate(link: BackfillLink): Promise<void> {
+  async navigate(link: BackfillLink, _ctx: BackfillNavigateContext): Promise<void> {
+    // Gemini has no clean conversation API (the SPA streams over an opaque
+    // batched protocol), so 'fetch' mode is unsupported here — we always
+    // click and let the DOM-scraping orchestrator capture from the rendered
+    // page. The runner passes mode through anyway for future-proofing.
     const live = findLiveAnchor(link.href);
     if (live) {
       live.click();

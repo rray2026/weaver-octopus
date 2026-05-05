@@ -30,6 +30,11 @@ const POPUP_DOM = `
   <span id="cache-count"></span>
   <button id="reset-btn" type="button">Reset cache</button>
 
+  <div id="claude-mode-row">
+    <label><input type="radio" name="claude-mode" value="intercept" /> 被动监听</label>
+    <label><input type="radio" name="claude-mode" value="fetch" /> 主动 fetch</label>
+  </div>
+
   <div>
     <input type="checkbox" id="provider-claude" checked />
     <input type="checkbox" id="provider-gemini" checked />
@@ -196,5 +201,51 @@ describe('popup', () => {
 
     expect(mock.storage.local[LAST_DOWNLOAD_KEY]).toEqual({ filename: 'keep.md', at: 1 });
     expect(mock.storage.local[HASH_KEY]).toEqual({ c1: 'h' });
+  });
+
+  describe('Claude capture mode toggle', () => {
+    it('preselects "intercept" by default when no preference is stored', async () => {
+      await loadPopup();
+      const intercept = document.querySelector<HTMLInputElement>(
+        'input[name="claude-mode"][value="intercept"]',
+      )!;
+      const fetchRadio = document.querySelector<HTMLInputElement>(
+        'input[name="claude-mode"][value="fetch"]',
+      )!;
+      expect(intercept.checked).toBe(true);
+      expect(fetchRadio.checked).toBe(false);
+    });
+
+    it('reflects the previously stored mode on open', async () => {
+      mock.storage.local['claudeCaptureMode'] = 'fetch';
+      await loadPopup();
+      const fetchRadio = document.querySelector<HTMLInputElement>(
+        'input[name="claude-mode"][value="fetch"]',
+      )!;
+      expect(fetchRadio.checked).toBe(true);
+    });
+
+    it('persists the new mode to chrome.storage.local on radio change', async () => {
+      await loadPopup();
+      const fetchRadio = document.querySelector<HTMLInputElement>(
+        'input[name="claude-mode"][value="fetch"]',
+      )!;
+      fetchRadio.checked = true;
+      fetchRadio.dispatchEvent(new Event('change'));
+      await flushAsync();
+      expect(mock.storage.local['claudeCaptureMode']).toBe('fetch');
+    });
+
+    it('round-trips back to "intercept" when the user re-selects it', async () => {
+      mock.storage.local['claudeCaptureMode'] = 'fetch';
+      await loadPopup();
+      const intercept = document.querySelector<HTMLInputElement>(
+        'input[name="claude-mode"][value="intercept"]',
+      )!;
+      intercept.checked = true;
+      intercept.dispatchEvent(new Event('change'));
+      await flushAsync();
+      expect(mock.storage.local['claudeCaptureMode']).toBe('intercept');
+    });
   });
 });

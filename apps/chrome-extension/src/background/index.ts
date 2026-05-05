@@ -4,6 +4,7 @@ import type {
   BackfillProviderProgress,
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,
+  ClaudeCaptureMode,
   ContentToBackgroundMessage,
   LastDownload,
   Provider,
@@ -262,6 +263,12 @@ async function startBackfill(
   };
   await writeProgress(fresh);
 
+  // Read the user's Claude capture-mode preference once. It controls both
+  // live capture (set by the content script at page load) and backfill —
+  // here we use it to pick the BACKFILL_RUN mode. Gemini is always click-
+  // based (no clean conversation API to call directly).
+  const claudeMode = await readClaudeCaptureMode();
+
   // Open / focus a tab per provider, all under one tab group.
   const tabIds: number[] = [];
   const providerTabs = new Map<Provider, number>();
@@ -341,6 +348,7 @@ async function startBackfill(
       maxIntervalMs: BACKFILL_DEFAULT_MAX_INTERVAL_MS,
       perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
       stopAfterConsecutiveDateSkips: BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS,
+      mode: provider === 'claude' && claudeMode === 'fetch' ? 'fetch' : 'click',
     };
     try {
       const ack = await chrome.tabs.sendMessage(tabId, message);
@@ -492,6 +500,16 @@ async function ensureContentScriptReady(
     });
   }
   return second.matched;
+}
+
+async function readClaudeCaptureMode(): Promise<ClaudeCaptureMode> {
+  try {
+    const items = await chrome.storage.local.get('claudeCaptureMode');
+    const v = items['claudeCaptureMode'];
+    return v === 'fetch' ? 'fetch' : 'intercept';
+  } catch {
+    return 'intercept';
+  }
 }
 
 function makeEmptyProviderProgress(): BackfillProviderProgress {

@@ -2,6 +2,7 @@ import { computeRange, loadFilter, saveFilter } from '../dateFilter.js';
 import type {
   BackfillProgress,
   BackfillProviderProgress,
+  ClaudeCaptureMode,
   DateFilter,
   DateFilterType,
   LastDownload,
@@ -11,6 +12,7 @@ import type {
 const LAST_DOWNLOAD_KEY = 'lastDownload';
 const HASH_STORAGE_KEY = 'convHashes';
 const BACKFILL_PROGRESS_KEY = 'backfillProgress';
+const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
 
 async function init(): Promise<void> {
   const statusEl = document.getElementById('status');
@@ -100,6 +102,10 @@ async function init(): Promise<void> {
     }
   });
 
+  // ─── Claude capture mode (intercept | fetch) ─────────────────────────────
+
+  await initClaudeMode();
+
   // ─── Backfill wiring ──────────────────────────────────────────────────────
 
   backfillStartBtn.addEventListener('click', async () => {
@@ -176,6 +182,24 @@ async function init(): Promise<void> {
       providersEl.appendChild(makeProviderRow(p, pp));
     }
     renderLog(logEl, prog);
+  }
+
+  async function initClaudeMode(): Promise<void> {
+    const radios = Array.from(
+      document.querySelectorAll<HTMLInputElement>('input[name="claude-mode"]'),
+    );
+    if (radios.length === 0) return;
+    const stored = await chrome.storage.local.get(CLAUDE_CAPTURE_MODE_KEY);
+    const current: ClaudeCaptureMode =
+      stored[CLAUDE_CAPTURE_MODE_KEY] === 'fetch' ? 'fetch' : 'intercept';
+    for (const r of radios) r.checked = r.value === current;
+    for (const r of radios) {
+      r.addEventListener('change', async () => {
+        if (!r.checked) return;
+        const next = r.value === 'fetch' ? 'fetch' : 'intercept';
+        await chrome.storage.local.set({ [CLAUDE_CAPTURE_MODE_KEY]: next });
+      });
+    }
   }
 }
 

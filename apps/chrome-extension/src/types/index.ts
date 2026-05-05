@@ -1,5 +1,15 @@
 export type Provider = 'claude' | 'gemini';
 
+/** How the Claude content script captures conversations.
+ *  - 'intercept' (default): MAIN-world fetch monkey-patch observes the SPA's
+ *    own conversation requests. Zero extra requests, but capture only fires
+ *    when the SPA actually re-fetches (cache hits skip us).
+ *  - 'fetch': URL-change listener triggers an explicit GET via the page's
+ *    own fetch (same-origin, credentials included). Independent of the
+ *    SPA's caching — better for backfill — but issues one extra request
+ *    per chat visit. */
+export type ClaudeCaptureMode = 'intercept' | 'fetch';
+
 /** Today's prompt list scraped from myactivity.google.com/product/gemini.
  *  Used by the Gemini DOM scraper to identify which conversation turns were
  *  sent today (Gemini's DOM has no per-turn timestamps). */
@@ -56,6 +66,10 @@ export type BackgroundToContentMessage =
       /** Stop the rest of the batch after this many consecutive `skipped:date`
        *  outcomes (sidebar is date-sorted past the pinned section). 0 disables. */
       stopAfterConsecutiveDateSkips: number;
+      /** 'click' (default): simulate a sidebar click and let the live
+       *  orchestrator capture; 'fetch' (Claude only): bypass the sidebar and
+       *  call the conversation API directly. */
+      mode: 'click' | 'fetch';
     }
   | {
       type: 'BACKFILL_STOP';

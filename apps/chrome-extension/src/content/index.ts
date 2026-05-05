@@ -1,15 +1,19 @@
 import { claudeBackfillAdapter } from './backfill/claude.js';
 import { geminiBackfillAdapter } from './backfill/gemini.js';
 import { runBackfill } from './backfill/runner.js';
+import { startClaudeFetchOrchestrator } from './claude-fetch-orchestrator.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
 import type {
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,
+  ClaudeCaptureMode,
   ContentToBackgroundMessage,
   Provider,
 } from '../types/index.js';
+
+const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
 
 // One content.js bundle is shared between claude.ai and gemini.google.com
 // (single Vite entry → single Rollup chunk → no shared-module split, which
@@ -17,7 +21,7 @@ import type {
 try {
   const host = location.hostname;
   if (host === 'claude.ai' || host.endsWith('.claude.ai')) {
-    startOrchestrator(new ClaudeParser());
+    void startClaudeWithConfiguredMode();
     installBackfillListener('claude');
   } else if (host === 'gemini.google.com' || host.endsWith('.gemini.google.com')) {
     startGeminiOrchestrator();
@@ -27,6 +31,26 @@ try {
   }
 } catch (err) {
   console.error('[weaver] failed to start orchestrator', err);
+}
+
+/** Reads the user's preferred capture mode from chrome.storage.local and
+ *  starts the matching orchestrator. Mode changes only take effect on the
+ *  next page load — that's surfaced in the popup UI as a hint. */
+async function startClaudeWithConfiguredMode(): Promise<void> {
+  let mode: ClaudeCaptureMode = 'intercept';
+  try {
+    const items = await chrome.storage.local.get(CLAUDE_CAPTURE_MODE_KEY);
+    const raw = items[CLAUDE_CAPTURE_MODE_KEY];
+    if (raw === 'intercept' || raw === 'fetch') mode = raw;
+  } catch (err) {
+    console.warn('[weaver] reading claudeCaptureMode failed, defaulting to intercept', err);
+  }
+  console.log('[weaver] claude capture mode:', mode);
+  if (mode === 'fetch') {
+    startClaudeFetchOrchestrator(new ClaudeParser());
+  } else {
+    startOrchestrator(new ClaudeParser());
+  }
 }
 
 /** Listens for BACKFILL_RUN from the background coordinator and runs the
@@ -61,6 +85,7 @@ function installBackfillListener(provider: Provider): void {
       maxIntervalMs: msg.maxIntervalMs,
       perChatTimeoutMs: msg.perChatTimeoutMs,
       stopAfterConsecutiveDateSkips: msg.stopAfterConsecutiveDateSkips,
+      mode: msg.mode,
       reportPatch: (patch: BackfillProviderProgressPatch) =>
         chrome.runtime
           .sendMessage({
