@@ -8,6 +8,7 @@ import {
   isLastTurnIncomplete,
   scrapeTurns,
   sliceFingerprint,
+  traceSliceMismatch,
   type GeminiTurn,
 } from './gemini.js';
 
@@ -97,6 +98,22 @@ describe('findMatchIndexAfter', () => {
   it('does NOT match when the truncated activity prefix is short (avoids false positives)', () => {
     // "hi…" → 'hi' is only 2 chars normalised. Refuse to claim a match.
     expect(findMatchIndexAfter('hi I have a question', ['hi…'], -1)).toBe(-1);
+  });
+
+  it('matches across mismatched trailing punctuation (?, !, .)', () => {
+    // Chat as typed by the user: "请帮我写代码？"
+    // myactivity stored: "请帮我写代码"
+    expect(findMatchIndexAfter('请帮我写代码？', ['请帮我写代码'], -1)).toBe(0);
+    expect(findMatchIndexAfter('hello!', ['hello'], -1)).toBe(0);
+    expect(findMatchIndexAfter('done.', ['done'], -1)).toBe(0);
+  });
+
+  it('matches across multiple trailing punctuation runs (??!)', () => {
+    expect(findMatchIndexAfter('really??!', ['really'], -1)).toBe(0);
+  });
+
+  it('matches across CJK + ASCII trailing punctuation mix', () => {
+    expect(findMatchIndexAfter('好的，', ['好的。'], -1)).toBe(0);
   });
 
   it('respects the `after` exclusive lower bound', () => {
@@ -285,5 +302,39 @@ describe('sliceFingerprint', () => {
       { userText: 'q2', modelText: 'a2' },
     ];
     expect(sliceFingerprint(a)).not.toBe(sliceFingerprint(b));
+  });
+});
+
+describe('traceSliceMismatch', () => {
+  it('reports each turn vs each remaining myactivity entry, naming the verdict', () => {
+    const lines: unknown[][] = [];
+    const log = (...args: unknown[]) => lines.push(args);
+    traceSliceMismatch(
+      [
+        { userText: 'history', modelText: 'r1' },
+        { userText: 'today-A', modelText: 'r2' },
+      ],
+      ['today-A', 'today-B'],
+      log,
+    );
+    const flat = lines.map((l) => l.join(' ')).join('\n');
+    // Most-recent turn matches the first myactivity entry → labelled EQUAL.
+    expect(flat).toMatch(/turn\[1\].*EQUAL/);
+    // Earlier turn does not match anything → NO MATCH followed by stop.
+    expect(flat).toMatch(/turn\[0\].*NO MATCH/);
+    // Header listing both prompts must appear.
+    expect(flat).toMatch(/myactivity\[0\] raw=/);
+  });
+
+  it('flags myactivity-empty as the cause when no today prompts exist', () => {
+    const lines: string[] = [];
+    traceSliceMismatch(
+      [{ userText: 'q', modelText: 'a' }],
+      [],
+      (...args: unknown[]) => {
+        lines.push(args.join(' '));
+      },
+    );
+    expect(lines.some((l) => l.includes('myactivity returned no today prompts'))).toBe(true);
   });
 });

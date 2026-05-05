@@ -24,6 +24,7 @@ import {
   isLastTurnIncomplete,
   scrapeTurns,
   sliceFingerprint,
+  traceSliceMismatch,
   type GeminiTurn,
 } from './providers/gemini.js';
 import type { ChatMessage, TodayGeminiPrompts } from '../types/index.js';
@@ -213,8 +214,19 @@ export function startGeminiOrchestrator(
         console.log(tag, 'skip: nothing in today slice', {
           turns: turns.length,
           baseline,
+          existingTurns: existing.length,
+          newSessionTurns: newSession.length,
           todayPrompts: today.prompts.length,
         });
+        // Detailed comparison so the user can see exactly which prompt
+        // mismatched (and how the normalised forms differ). Only emitted
+        // when there ARE today prompts AND existing turns to compare —
+        // otherwise the high-level log above is sufficient.
+        if (existing.length > 0 && today.prompts.length > 0) {
+          traceSliceMismatch(existing, today.prompts, (...args) =>
+            console.warn(tag, ...args),
+          );
+        }
         dispatchCaptureDecision({
           provider: 'gemini',
           conversationId: convId,

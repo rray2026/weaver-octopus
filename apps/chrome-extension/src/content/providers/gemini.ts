@@ -135,16 +135,24 @@ export function computeTodaySlice(
 /** True if myactivity visibly truncated this prompt (it ends with one or
  *  more '…' / '...' before whitespace). We honour prefix matching only in
  *  this case — see `findMatchIndexAfter`. */
-function isTruncated(raw: string): boolean {
+export function isTruncated(raw: string): boolean {
   return /(?:…|\.{3,})\s*$/.test(raw.trim());
 }
 
-function normalizeForMatch(s: string): string {
-  return (s || '')
-    .replace(/\s+/g, '')
-    .replace(/[……]+$/g, '')
-    .replace(/\.+$/g, '')
-    .toLowerCase();
+// Punctuation Gemini's chat-rendered text and myactivity's listing often
+// disagree on at the *very end* of a prompt. Stripping these from both
+// sides before comparing avoids false negatives without weakening the
+// strict-equality check meaningfully.
+//   ASCII:  . ? ! , ; :
+//   CJK:    。 ？ ！ ， ； ：
+//   ellipsis: … (single) and runs of …
+const TRAILING_PUNCT_RE = /[…….?!,;:。？！，；：]+$/u;
+
+export function normalizeForMatch(s: string): string {
+  let out = (s || '').replace(/\s+/g, '');
+  // Strip trailing punctuation iteratively (e.g. "??！" → "" in one pass).
+  while (TRAILING_PUNCT_RE.test(out)) out = out.replace(TRAILING_PUNCT_RE, '');
+  return out.toLowerCase();
 }
 
 /** Returns the smallest index > `after` whose prompt matches `prompt`, or
@@ -176,6 +184,66 @@ export function findMatchIndexAfter(
     if (isTruncated(rawT) && t.length >= 8 && u.startsWith(t)) return i;
   }
   return -1;
+}
+
+/** Diagnostic dump explaining why `computeTodaySlice` returned []. Walks
+ *  the same logic as the slicer but logs every comparison so the user can
+ *  see exactly which prompt mismatched and how it normalised. Called from
+ *  the orchestrator's "nothing in today slice" branch. */
+export function traceSliceMismatch(
+  turns: GeminiTurn[],
+  todayPrompts: string[],
+  log: (...args: unknown[]) => void = console.warn,
+): void {
+  log('[gemini:slice-trace] today prompts (newest-first, normalised):');
+  if (todayPrompts.length === 0) {
+    log('  (myactivity returned no today prompts — orchestrator will fall back to newSession only)');
+  } else {
+    todayPrompts.forEach((p, i) => {
+      log(`  myactivity[${i}] raw=${JSON.stringify(p)} → norm=${JSON.stringify(normalizeForMatch(p))} truncated=${isTruncated(p)}`);
+    });
+  }
+  log('[gemini:slice-trace] chat turns (oldest→newest, last 10):');
+  const startAt = Math.max(0, turns.length - 10);
+  for (let i = startAt; i < turns.length; i++) {
+    log(`  turn[${i}] user=${JSON.stringify(turns[i]!.userText)} → norm=${JSON.stringify(normalizeForMatch(turns[i]!.userText))}`);
+  }
+  if (todayPrompts.length === 0) return;
+  log('[gemini:slice-trace] walking newest→oldest, comparing each turn against remaining myactivity entries:');
+  let minIdx = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const userText = turns[i]!.userText;
+    if (!userText) {
+      log(`  turn[${i}] EMPTY userText → stop`);
+      return;
+    }
+    const u = normalizeForMatch(userText);
+    if (!u) {
+      log(`  turn[${i}] norm is empty → stop`);
+      return;
+    }
+    let matched = -1;
+    for (let j = minIdx + 1; j < todayPrompts.length; j++) {
+      const raw = todayPrompts[j] ?? '';
+      const t = normalizeForMatch(raw);
+      const eq = u === t;
+      const truncPrefix =
+        isTruncated(raw) && t.length >= 8 && u.startsWith(t);
+      const verdict = eq ? 'EQUAL' : truncPrefix ? 'TRUNCATED-PREFIX' : 'no';
+      log(`  turn[${i}] vs myactivity[${j}] u=${JSON.stringify(u)} t=${JSON.stringify(t)} → ${verdict}`);
+      if (eq || truncPrefix) {
+        matched = j;
+        break;
+      }
+    }
+    if (matched < 0) {
+      log(`  turn[${i}] NO MATCH → stop walking; this turn (and everything older) is excluded`);
+      return;
+    }
+    log(`  turn[${i}] ✓ matched myactivity[${matched}]`);
+    minIdx = matched;
+  }
+  log('[gemini:slice-trace] (every turn matched — slice should NOT have been empty; check baseline / newSession logic)');
 }
 
 /** Cheap content-fingerprint for in-tab dedup (avoid re-sending the same
