@@ -204,7 +204,8 @@
         <label><input type="radio" name="claude-mode" value="fetch" /> 主动 fetch</label>
       </div>
       <p style="font-size:10px;color:#888;margin:4px 0 8px;">
-        切换后需刷新 claude.ai 标签页生效。批量回填也使用此模式（fetch 模式跳过点击直接拉取）。
+        切换后需刷新 claude.ai 标签页生效。批量回填也使用此模式（fetch 模式跳过点击直接拉取）。<br/>
+        首次启用 fetch：先在 claude.ai 打开任意一个会话，让 intercept 抓到一组 anthropic-* 身份头，否则 API 会返回 403。
       </p>
 
       <h2>批量回填</h2>

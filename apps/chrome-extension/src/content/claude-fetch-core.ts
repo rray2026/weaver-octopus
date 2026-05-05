@@ -11,6 +11,7 @@
 // architecture stays stateless across orchestrator vs backfill.
 
 import { dispatchCaptureDecision } from './captureEvents.js';
+import { getCachedClaudeHeaders } from './claude-headers-cache.js';
 import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
 import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
@@ -65,7 +66,7 @@ export async function processClaudeChatById(
   try {
     const url = `/api/organizations/${orgId}/chat_conversations/${chatId}`;
     console.log(tag, 'fetching', url);
-    const res = await fetchImpl(url, { credentials: 'include' });
+    const res = await authedFetch(fetchImpl, url);
     if (!res.ok) {
       const reason = `fetch ${res.status}`;
       dispatchCaptureDecision({
@@ -212,7 +213,7 @@ async function ensureOrgId(fetchImpl: typeof fetch, tag: string): Promise<string
 
   try {
     console.log(tag, 'discovering org id via /api/organizations');
-    const res = await fetchImpl('/api/organizations', { credentials: 'include' });
+    const res = await authedFetch(fetchImpl, '/api/organizations');
     if (!res.ok) return null;
     const orgs = (await res.json()) as Array<{ uuid?: string; id?: string }>;
     if (!Array.isArray(orgs) || orgs.length === 0) return null;
@@ -229,6 +230,24 @@ async function ensureOrgId(fetchImpl: typeof fetch, tag: string): Promise<string
     console.warn(tag, 'org discovery failed', err);
     return null;
   }
+}
+
+/** Issues a fetch to a Claude API endpoint with the same identity headers
+ *  the SPA itself uses (captured by the MAIN-world intercept). Without these
+ *  Claude returns 403 even with valid cookies. */
+async function authedFetch(
+  fetchImpl: typeof fetch,
+  url: string,
+): Promise<Response> {
+  const cached = await getCachedClaudeHeaders();
+  const headers = new Headers(cached ?? {});
+  // Claude expects Accept: application/json on these endpoints; harmless if
+  // the cached set already includes it.
+  if (!headers.has('accept')) headers.set('accept', 'application/json');
+  return fetchImpl(url, {
+    credentials: 'include',
+    headers,
+  });
 }
 
 async function loadHashes(): Promise<Record<string, string>> {

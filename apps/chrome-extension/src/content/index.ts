@@ -2,6 +2,7 @@ import { claudeBackfillAdapter } from './backfill/claude.js';
 import { geminiBackfillAdapter } from './backfill/gemini.js';
 import { runBackfill } from './backfill/runner.js';
 import { startClaudeFetchOrchestrator } from './claude-fetch-orchestrator.js';
+import { startClaudeHeadersCache } from './claude-headers-cache.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
@@ -21,6 +22,10 @@ const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
 try {
   const host = location.hostname;
   if (host === 'claude.ai' || host.endsWith('.claude.ai')) {
+    // Capture identity headers from any intercepted /api/* call. This runs
+    // unconditionally (even in 'intercept' mode) so that switching to
+    // 'fetch' mode later finds a fresh header set.
+    startClaudeHeadersCache();
     void startClaudeWithConfiguredMode();
     installBackfillListener('claude');
   } else if (host === 'gemini.google.com' || host.endsWith('.gemini.google.com')) {
