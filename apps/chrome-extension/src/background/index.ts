@@ -1,3 +1,4 @@
+import { devOnInstalled, startDevAutoReload } from './dev-autoreload.js';
 import type {
   BackfillLogEntry,
   BackfillProgress,
@@ -40,7 +41,15 @@ let lastActivityRefreshAt = 0;
 
 chrome.runtime.onInstalled.addListener((details) => {
   console.log(TAG, 'onInstalled', { reason: details.reason });
+  // Dev-only: refresh matched tabs after a self-reload triggered by the
+  // file-watcher poller below. Tree-shaken in production.
+  if (__WEAVER_DEV__) void devOnInstalled(details);
 });
+
+// Dev-only: poll dist/build_id.txt and chrome.runtime.reload() on change
+// so each `WEAVER_DEV=1 pnpm dev` rebuild lands automatically. The const
+// gate ensures the import + call are dropped from production bundles.
+if (__WEAVER_DEV__) startDevAutoReload();
 
 type IncomingMessage =
   | ContentToBackgroundMessage

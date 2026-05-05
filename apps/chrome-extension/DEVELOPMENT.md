@@ -37,6 +37,44 @@ Output: `dist/` — load this folder as an unpacked extension in Chrome.
 > script running with an invalidated `chrome.runtime` context. The orchestrator
 > detects this case, prints one warning, and stops processing further events.
 
+## Hot-reload dev workflow (no manual ↺ + tab refresh)
+
+```bash
+# In one terminal: vite watch + emit a fresh dist/build_id.txt every build
+WEAVER_DEV=1 pnpm --filter @weaver-octopus/chrome-extension dev
+```
+
+Background SW polls `build_id.txt` every 2s; on change it
+`chrome.runtime.reload()`s itself, then the new SW refreshes every tab
+matched by `host_permissions`. End result: edit → save → ~2-3s later
+the tab is on the freshly-built code, no clicking required.
+
+Production builds (`pnpm build` without `WEAVER_DEV`) leave the dev
+constant `__WEAVER_DEV__` false, so the poller / installer hook are
+tree-shaken away — no extra requests, no extra storage keys.
+
+### Other speed-up knobs
+
+- **Backfill interval**: in the popup, the 间隔 inputs accept `0 ~ 0` —
+  zero-pace backfill burns through chats as fast as the orchestrator can
+  process them. Useful when iterating on Claude fetch-mode logic.
+- **Targeted tests**: `pnpm --filter @weaver-octopus/chrome-extension test path/to/file` —
+  e.g. `... runner.test.ts` only re-runs that suite (~1s vs 5s for all).
+- **DevTools console filter**: paste `[weaver` into the filter input on
+  any page console / SW console to see only our logs. Each subsystem
+  has its own prefix:
+  - `[weaver:intercept]` MAIN-world fetch patch
+  - `[weaver:orch]` Claude intercept orchestrator
+  - `[weaver:claude-fetch]` Claude fetch orchestrator
+  - `[weaver:gemini]` Gemini orchestrator
+  - `[weaver:claude-headers]`, `[weaver:claude-stale]`
+  - `[weaver:bg]` background coordinator
+  - `[weaver:backfill]` backfill runner
+  - `[weaver:dev-autoreload]` hot-reload poller
+- **Slice-mismatch trace**: when Gemini logs `skip: nothing in today
+  slice`, it follows up with a per-turn EQUAL/no diff — read those lines
+  to see exactly why a chat was excluded.
+
 ## Project structure
 
 ```
