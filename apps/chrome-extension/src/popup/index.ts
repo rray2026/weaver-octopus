@@ -35,6 +35,7 @@ async function init(): Promise<void> {
   const logList = document.getElementById('log-list');
   const claudeCheck = document.getElementById('provider-claude') as HTMLInputElement | null;
   const geminiCheck = document.getElementById('provider-gemini') as HTMLInputElement | null;
+  const chatgptCheck = document.getElementById('provider-chatgpt') as HTMLInputElement | null;
   if (
     !statusEl ||
     !shortcutsEl ||
@@ -50,7 +51,8 @@ async function init(): Promise<void> {
     !progressProviders ||
     !logList ||
     !claudeCheck ||
-    !geminiCheck
+    !geminiCheck ||
+    !chatgptCheck
   )
     return;
 
@@ -126,6 +128,7 @@ async function init(): Promise<void> {
     const providers: Provider[] = [];
     if (claudeCheck.checked) providers.push('claude');
     if (geminiCheck.checked) providers.push('gemini');
+    if (chatgptCheck.checked) providers.push('chatgpt');
     if (providers.length === 0) {
       alert('请至少勾选一个 provider');
       return;

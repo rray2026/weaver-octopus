@@ -38,6 +38,7 @@ const POPUP_DOM = `
   <div>
     <input type="checkbox" id="provider-claude" checked />
     <input type="checkbox" id="provider-gemini" checked />
+    <input type="checkbox" id="provider-chatgpt" checked />
   </div>
   <button id="backfill-start" type="button">开始</button>
   <button id="backfill-stop" type="button" disabled>停止</button>

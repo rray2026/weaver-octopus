@@ -1,4 +1,4 @@
-export type Provider = 'claude' | 'gemini';
+export type Provider = 'claude' | 'gemini' | 'chatgpt';
 
 /** A single day's prompts scraped from myactivity.google.com/product/gemini.
  *  Days are listed in display order (newest first). */

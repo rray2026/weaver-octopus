@@ -385,6 +385,74 @@ describe('background resolveInterval', () => {
   });
 });
 
+describe('background ensureProviderTab multi-tab selection', () => {
+  let mock: ChromeMock;
+  let ensureProviderTab: typeof import('./index.js').__backfillInternals.ensureProviderTab;
+
+  beforeEach(async () => {
+    mock = installChromeMock();
+    vi.resetModules();
+    const mod = await import('./index.js');
+    ensureProviderTab = mod.__backfillInternals.ensureProviderTab;
+  });
+
+  afterEach(() => {
+    uninstallChromeMock();
+  });
+
+  it('creates a fresh tab when no provider tab is open', async () => {
+    mock.tabs.query.mockResolvedValueOnce([]);
+    const id = await ensureProviderTab('chatgpt');
+    expect(mock.tabs.create).toHaveBeenCalledTimes(1);
+    expect(id).toBe(99); // mock default
+  });
+
+  it('prefers a tab on the provider root URL over a tab in a live chat', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 100, url: 'https://chatgpt.com/c/abcd-1', active: true },
+      { id: 200, url: 'https://chatgpt.com/' /* root */, active: false },
+    ]);
+    const id = await ensureProviderTab('chatgpt');
+    expect(id).toBe(200);
+    expect(mock.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('prefers the active tab when none are on root', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 100, url: 'https://chatgpt.com/c/x', active: false },
+      { id: 200, url: 'https://chatgpt.com/c/y', active: true },
+      { id: 300, url: 'https://chatgpt.com/c/z', active: false },
+    ]);
+    expect(await ensureProviderTab('chatgpt')).toBe(200);
+  });
+
+  it('falls back to the lowest tab id when no preference applies', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 300, url: 'https://chatgpt.com/c/a', active: false },
+      { id: 100, url: 'https://chatgpt.com/c/b', active: false },
+      { id: 200, url: 'https://chatgpt.com/c/c', active: false },
+    ]);
+    expect(await ensureProviderTab('chatgpt')).toBe(100);
+  });
+
+  it('breaks ties between multiple root tabs by lowest id', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 200, url: 'https://chatgpt.com/', active: false },
+      { id: 100, url: 'https://chatgpt.com/', active: true },
+    ]);
+    // Both are root: tie-break to lowest id wins, NOT active.
+    expect(await ensureProviderTab('chatgpt')).toBe(100);
+  });
+
+  it('handles claude root URLs (`/` and `/new`)', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 100, url: 'https://claude.ai/chat/abc', active: true },
+      { id: 200, url: 'https://claude.ai/new', active: false },
+    ]);
+    expect(await ensureProviderTab('claude')).toBe(200);
+  });
+});
+
 describe('background appendLog', () => {
   let appendLog: typeof import('./index.js').__backfillInternals.appendLog;
 

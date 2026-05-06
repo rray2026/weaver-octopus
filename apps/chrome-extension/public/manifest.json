@@ -27,7 +27,18 @@
       "world": "MAIN"
     },
     {
-      "matches": ["https://claude.ai/*", "https://gemini.google.com/*"],
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["intercept-chatgpt.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     },
@@ -47,6 +58,8 @@
   "host_permissions": [
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "https://myactivity.google.com/*"
+    "https://myactivity.google.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
   ]
 }

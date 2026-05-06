@@ -1,3 +1,4 @@
+import { chatgptBackfillAdapter, collectChatGPTChatLinks } from './backfill/chatgpt.js';
 import { claudeBackfillAdapter, collectClaudeChatLinks } from './backfill/claude.js';
 import { geminiBackfillAdapter, collectGeminiChatLinks } from './backfill/gemini.js';
 import { runBackfill } from './backfill/runner.js';
@@ -5,6 +6,7 @@ import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { setBackfillInFlight } from './live-capture-gate.js';
 import { startOrchestrator } from './orchestrator.js';
+import { ChatGPTParser } from './providers/chatgpt.js';
 import { ClaudeParser } from './providers/claude.js';
 import { startDevForwarder as startContentDevLogForwarder } from '@weaver-octopus/ext-dev-rpc/content';
 import { captureDomSnapshot as devCaptureDomSnapshot } from '../dev/dom-snapshot.js';
@@ -32,11 +34,28 @@ try {
     // a fetch-mode replay path was attempted and abandoned because Claude's
     // API rejects replayed requests with 403 even when all captured
     // anthropic-* identity headers are present.
-    startOrchestrator(new ClaudeParser());
+    startOrchestrator(new ClaudeParser(), {
+      provider: 'claude',
+      interceptSource: 'weaver-octopus:intercept',
+      titleStripRe: /\s*[-–]\s*Claude\s*$/,
+    });
     installBackfillListener('claude');
   } else if (host === 'gemini.google.com' || host.endsWith('.gemini.google.com')) {
     startGeminiOrchestrator();
     installBackfillListener('gemini');
+  } else if (host === 'chatgpt.com' || host.endsWith('.chatgpt.com')) {
+    // ChatGPT is backfill-only. The orchestrator runs and listens for
+    // intercept events, but its `isLiveCaptureAllowed()` gate at the
+    // entry of `handleConversation` drops everything unless backfill
+    // is actually in flight (set via `setBackfillInFlight(true)` in
+    // installBackfillListener below). Live-capture toggle on the popup
+    // intentionally does not affect chatgpt.com — see PROVIDER notes.
+    startOrchestrator(new ChatGPTParser(), {
+      provider: 'chatgpt',
+      interceptSource: 'weaver-octopus:chatgpt-intercept',
+      titleStripRe: /\s*[-–]\s*ChatGPT\s*$/,
+    });
+    installBackfillListener('chatgpt');
   } else {
     console.warn('[weaver] content script loaded on unexpected host', host);
   }
@@ -58,11 +77,12 @@ function installBackfillListener(provider: Provider): void {
         return false;
       }
       const scrape =
-        provider === 'claude' ? () => [] : () => scrapeGeminiTurns(document);
-      const enumerate = () =>
-        provider === 'claude'
-          ? collectClaudeChatLinks(document)
-          : collectGeminiChatLinks(document);
+        provider === 'gemini' ? () => scrapeGeminiTurns(document) : () => [];
+      const enumerate = () => {
+        if (provider === 'claude') return collectClaudeChatLinks(document);
+        if (provider === 'gemini') return collectGeminiChatLinks(document);
+        return collectChatGPTChatLinks(document);
+      };
       try {
         const snapshot = devCaptureDomSnapshot(scrape, enumerate);
         sendResponse({ ok: true, snapshot });
@@ -95,7 +115,12 @@ function installBackfillListener(provider: Provider): void {
     // batch is in flight — backfill IS the orchestrator pipeline,
     // just driven by a navigation script instead of user clicks.
     setBackfillInFlight(true);
-    const adapter = provider === 'claude' ? claudeBackfillAdapter : geminiBackfillAdapter;
+    const adapter =
+      provider === 'claude'
+        ? claudeBackfillAdapter
+        : provider === 'gemini'
+          ? geminiBackfillAdapter
+          : chatgptBackfillAdapter;
     runBackfill(adapter, {
       minIntervalMs: msg.minIntervalMs,
       maxIntervalMs: msg.maxIntervalMs,

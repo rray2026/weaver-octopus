@@ -4,23 +4,38 @@ import { hashString } from './hash.js';
 import { isLiveCaptureAllowed } from './live-capture-gate.js';
 import { messagesToMarkdown, sanitizeFilename } from './markdown.js';
 import type { ProviderParser } from './providers/types.js';
+import type { Provider } from '../types/index.js';
 
-const INTERCEPT_SOURCE = 'weaver-octopus:intercept';
 const HASH_STORAGE_KEY = 'convHashes';
-const TAG = '[weaver:orch]';
 
 interface InterceptedMessage {
-  source: typeof INTERCEPT_SOURCE;
+  source: string;
   type: 'CONVERSATION';
   conversationId: string;
   body: unknown;
 }
 
-/**
- * Wires up MAIN-world fetch interception → markdown download.
- * Returns a teardown function that removes both event listeners.
- */
-export function startOrchestrator(parser: ProviderParser): () => void {
+export interface OrchestratorOptions {
+  /** Which provider this orchestrator instance is wired for. Used in
+   *  CAPTURE_DECISION events and the markdown filename prefix. */
+  provider: Provider;
+  /** postMessage `source` sentinel emitted by this provider's MAIN-world
+   *  intercept. Filters out cross-provider noise on a tab that somehow
+   *  hosts both (shouldn't happen, but cheap to be strict). */
+  interceptSource: string;
+  /** Strips the provider-specific suffix off `document.title` so we have
+   *  something usable when the API body lacks a title. */
+  titleStripRe: RegExp;
+}
+
+/** Wires up MAIN-world fetch interception → markdown download.
+ *  Returns a teardown function that removes both event listeners. */
+export function startOrchestrator(
+  parser: ProviderParser,
+  opts: OrchestratorOptions,
+): () => void {
+  const { provider, interceptSource, titleStripRe } = opts;
+  const TAG = `[weaver:orch:${provider}]`;
   console.log(TAG, 'started', { origin: location.origin, href: location.href });
   let seq = 0;
   // Hash is per-conversation: navigating to a different chat resets it so a
@@ -74,7 +89,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
     // real intercept. Origin + the string sentinel below are sufficient.
     if (event.origin !== location.origin) return;
     const data = event.data as InterceptedMessage | undefined;
-    if (!data || data.source !== INTERCEPT_SOURCE || data.type !== 'CONVERSATION') return;
+    if (!data || data.source !== interceptSource || data.type !== 'CONVERSATION') return;
     console.log(TAG, 'received intercept msg', { conversationId: data.conversationId });
     enqueue(data);
   };
@@ -123,12 +138,12 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       return;
     }
     try {
-      const fallbackTitle = document.title.replace(/\s*[-–]\s*Claude\s*$/, '').trim();
+      const fallbackTitle = document.title.replace(titleStripRe, '').trim();
       const conv = parser.parseConversation(msg.body, location.href, fallbackTitle);
       if (!conv) {
         console.log(tag, 'skip: parser returned null (body shape mismatch)');
         dispatchCaptureDecision({
-          provider: 'claude',
+          provider,
           conversationId: msg.conversationId,
           action: 'skipped:other',
           reason: 'parser returned null',
@@ -151,7 +166,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       if (inRange.length === 0) {
         console.log(tag, 'skip: no messages in date range');
         dispatchCaptureDecision({
-          provider: 'claude',
+          provider,
           conversationId: msg.conversationId,
           action: 'skipped:date',
           reason: `no messages within ${range.label}`,
@@ -159,7 +174,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
         return;
       }
 
-      const markdown = messagesToMarkdown(inRange, conv.title, conv.url, range.label);
+      const markdown = messagesToMarkdown(inRange, conv.title, conv.url, range.label, provider);
       const newHash = await hashString(markdown);
       const prevHash = lastHashByConv.get(msg.conversationId);
       if (prevHash === newHash) {
@@ -167,7 +182,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
           hash: newHash.slice(0, 8),
         });
         dispatchCaptureDecision({
-          provider: 'claude',
+          provider,
           conversationId: msg.conversationId,
           action: 'skipped:hash',
           reason: 'identical content already downloaded',
@@ -188,7 +203,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       // (newest in-range message's createdAt). So a "yesterday" filter
       // run lands in ~/Downloads/.../<yesterday>/ not today's folder.
       const folderDate = folderDateFromMessages(inRange);
-      const filename = `weaver-octopus/${folderDate}/[claude] ${sanitizeFilename(conv.title)}-${idSuffix}.md`;
+      const filename = `weaver-octopus/${folderDate}/[${provider}] ${sanitizeFilename(conv.title)}-${idSuffix}.md`;
       console.log(tag, 'sending DOWNLOAD_REQUEST', {
         filename,
         bytes: markdown.length,
@@ -204,7 +219,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
         if (!ack || !ack.ok) {
           console.error(tag, 'background rejected DOWNLOAD_REQUEST', ack);
           dispatchCaptureDecision({
-            provider: 'claude',
+            provider,
             conversationId: msg.conversationId,
             action: 'skipped:other',
             reason: `background rejected download${ack?.error ? `: ${ack.error}` : ''}`,
@@ -213,7 +228,7 @@ export function startOrchestrator(parser: ProviderParser): () => void {
         }
         console.log(tag, 'download acked by background', { downloadId: ack.downloadId });
         dispatchCaptureDecision({
-          provider: 'claude',
+          provider,
           conversationId: msg.conversationId,
           action: 'downloaded',
         });

@@ -39,6 +39,7 @@ const BACKFILL_LOG_CAP_PER_PROVIDER = 200;
 const PROVIDER_URLS: Record<Provider, string> = {
   claude: 'https://claude.ai/',
   gemini: 'https://gemini.google.com/app',
+  chatgpt: 'https://chatgpt.com/',
 };
 
 let seq = 0;
@@ -81,7 +82,7 @@ if (__WEAVER_DEV__) {
           ? (cmd['providers'] as unknown[])
           : ['claude', 'gemini'];
         const providers = rawProviders.filter(
-          (p): p is Provider => p === 'claude' || p === 'gemini',
+          (p): p is Provider => p === 'claude' || p === 'gemini' || p === 'chatgpt',
         );
         return startBackfill(providers, '[dev]', {
           intervalMinSec:
@@ -232,10 +233,16 @@ if (__WEAVER_DEV__) {
         const geminiTabs = await chrome.tabs.query({
           url: 'https://gemini.google.com/*',
         });
+        const chatgptTabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
         const myactivityTabs = await chrome.tabs.query({
           url: 'https://myactivity.google.com/*',
         });
-        const tabs = [...claudeTabs, ...geminiTabs, ...myactivityTabs].map((t) => ({
+        const tabs = [
+          ...claudeTabs,
+          ...geminiTabs,
+          ...chatgptTabs,
+          ...myactivityTabs,
+        ].map((t) => ({
           id: t.id,
           url: t.url,
           status: t.status,
@@ -711,17 +718,48 @@ async function stopBackfill(tag: string): Promise<{ ok: boolean }> {
 async function ensureProviderTab(provider: Provider): Promise<number> {
   const pattern = providerUrlPattern(provider);
   const tabs = await chrome.tabs.query({ url: pattern });
-  // Prefer an existing tab so we don't duplicate browsing context. If the
-  // user is mid-conversation we won't disturb them — but we'll still navigate
-  // them through history during the backfill (acceptable: that's the feature).
-  if (tabs.length > 0 && tabs[0]!.id != null) return tabs[0]!.id;
-  const created = await chrome.tabs.create({ url: PROVIDER_URLS[provider], active: false });
-  if (created.id == null) throw new Error('chrome.tabs.create returned no id');
-  return created.id;
+  // Multi-tab handling: when the user has several tabs of the same provider
+  // open, pick deterministically and prefer the LEAST disruptive one to
+  // hijack with sidebar clicks. Order:
+  //   1. Tab on the provider's root / new-chat URL (no live conversation
+  //      to interrupt). These are by definition idle.
+  //   2. Active tab of the matching set.
+  //   3. Lowest tab.id (oldest opened — stable across runs).
+  // We don't want to pick a tab the user is mid-typing in if a quieter
+  // candidate is available.
+  const live = tabs.filter((t): t is chrome.tabs.Tab & { id: number } => t.id != null);
+  if (live.length === 0) {
+    const created = await chrome.tabs.create({ url: PROVIDER_URLS[provider], active: false });
+    if (created.id == null) throw new Error('chrome.tabs.create returned no id');
+    return created.id;
+  }
+  const rootUrls = providerRootUrls(provider);
+  const onRoot = live.filter((t) => rootUrls.includes(t.url ?? ''));
+  if (onRoot.length > 0) return pickStable(onRoot);
+  const active = live.filter((t) => t.active);
+  if (active.length > 0) return pickStable(active);
+  return pickStable(live);
+}
+
+/** Stable pick: the lowest tab.id. Tab ids monotonically increase, so the
+ *  oldest matching tab wins — repeat backfills hit the same tab unless
+ *  it's closed. */
+function pickStable(tabs: Array<{ id: number }>): number {
+  return tabs.reduce((min, t) => (t.id < min ? t.id : min), tabs[0]!.id);
+}
+
+/** URLs we treat as "no live conversation to interrupt" — a backfill that
+ *  drives sidebar clicks here is invisible to the user. */
+function providerRootUrls(provider: Provider): string[] {
+  if (provider === 'claude') return ['https://claude.ai/', 'https://claude.ai/new'];
+  if (provider === 'gemini') return ['https://gemini.google.com/app'];
+  return ['https://chatgpt.com/', 'https://chatgpt.com'];
 }
 
 function providerUrlPattern(provider: Provider): string {
-  return provider === 'claude' ? 'https://claude.ai/*' : 'https://gemini.google.com/*';
+  if (provider === 'claude') return 'https://claude.ai/*';
+  if (provider === 'gemini') return 'https://gemini.google.com/*';
+  return 'https://chatgpt.com/*';
 }
 
 async function waitForTabComplete(tabId: number, timeoutMs: number): Promise<void> {
@@ -934,4 +972,5 @@ export const __backfillInternals = {
   patchProvider,
   writeProgress,
   readProgress,
+  ensureProviderTab,
 };

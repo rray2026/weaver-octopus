@@ -66,7 +66,7 @@ describe('orchestrator', () => {
   });
 
   it('downloads when a fresh conversation is intercepted', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv());
 
     await vi.waitFor(() => {
@@ -82,7 +82,7 @@ describe('orchestrator', () => {
   });
 
   it('dedupes identical content per conversation', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     const conv = makeConv();
 
     postFromMain(CONV_A, conv);
@@ -94,7 +94,7 @@ describe('orchestrator', () => {
   });
 
   it('downloads different conversations independently', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
 
     postFromMain(CONV_A, makeConv({ title: 'Chat A' }));
     await vi.waitFor(() => expect(mockChrome.runtime.sendMessage).toHaveBeenCalledTimes(1));
@@ -108,7 +108,7 @@ describe('orchestrator', () => {
   });
 
   it('skips download when range filter excludes all messages', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
 
     const yesterday = Date.now() - 1000 * 60 * 60 * 30;
     postFromMain(
@@ -123,7 +123,7 @@ describe('orchestrator', () => {
   });
 
   it('ignores messages from foreign origins', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
 
     const ev = new MessageEvent('message', {
       data: {
@@ -142,7 +142,7 @@ describe('orchestrator', () => {
   });
 
   it('ignores messages with the wrong source tag', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     window.postMessage(
       { source: 'someone-else', type: 'CONVERSATION', conversationId: CONV_A, body: makeConv() },
       location.origin,
@@ -152,7 +152,7 @@ describe('orchestrator', () => {
   });
 
   it('persists hashes to chrome.storage.local after each download', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv());
 
     await vi.waitFor(() => {
@@ -166,14 +166,14 @@ describe('orchestrator', () => {
 
   it('hydrated hashes from storage suppress duplicate downloads', async () => {
     // Pre-seed by running one download to learn the canonical hash.
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv());
     await vi.waitFor(() => expect(mockChrome.runtime.sendMessage).toHaveBeenCalledTimes(1));
 
     // Tear down, keep storage state, start a fresh orchestrator.
     dispose();
     mockChrome.runtime.sendMessage.mockClear();
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
 
     postFromMain(CONV_A, makeConv());
     await flushMacro();
@@ -181,7 +181,7 @@ describe('orchestrator', () => {
   });
 
   it('clearing convHashes does NOT auto-redownload (user-driven re-trigger)', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv({ title: 'Resettable A' }));
     postFromMain(CONV_B, makeConv({ title: 'Resettable B' }));
 
@@ -203,7 +203,7 @@ describe('orchestrator', () => {
   });
 
   it('mirrors external convHashes updates into the in-memory map', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv());
     await vi.waitFor(() => expect(mockChrome.runtime.sendMessage).toHaveBeenCalledTimes(1));
 
@@ -219,7 +219,7 @@ describe('orchestrator', () => {
   });
 
   it('stops processing after Extension context is invalidated', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
 
     mockChrome.runtime.sendMessage.mockImplementationOnce(async () => {
       throw new Error('Extension context invalidated.');
@@ -236,7 +236,7 @@ describe('orchestrator', () => {
   });
 
   it('passes filter range label into markdown header', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     postFromMain(CONV_A, makeConv());
     await vi.waitFor(() => expect(mockChrome.runtime.sendMessage).toHaveBeenCalledTimes(1));
 
@@ -245,7 +245,7 @@ describe('orchestrator', () => {
   });
 
   it('dispose() removes window and storage listeners', async () => {
-    dispose = startOrchestrator(parser);
+    dispose = startOrchestrator(parser, { provider: "claude", interceptSource: "weaver-octopus:intercept", titleStripRe: /\s*[-–]\s*Claude\s*$/ });
     dispose();
     dispose = undefined; // prevent afterEach double-dispose
 
