@@ -63,6 +63,14 @@ export function startGeminiOrchestrator(
   let extensionInvalidated = false;
   let pendingTrigger: ReturnType<typeof setTimeout> | null = null;
   let lastUrl = location.href;
+  // Per-conversation, last observed `turns.length`. Used to defer processing
+  // until the DOM stops growing — Gemini's SPA renders chats progressively
+  // after navigation, so an early MutationObserver tick can see only a
+  // partial conversation. Acting on that produces non-deterministic
+  // backfill outcomes (a chat downloads or skips depending on which tick
+  // fires first). We require two consecutive runExport calls to see the
+  // same turn count before trusting it.
+  const lastTurnCountByConv = new Map<string, number>();
 
   const hydrationPromise = hydrateHashes();
 
@@ -164,6 +172,24 @@ export function startGeminiOrchestrator(
         // the model finishes streaming. Backfill runner's timeout catches
         // the (rare) case where streaming never resolves.
         console.log(tag, 'skip: last turn still streaming');
+        return;
+      }
+
+      // Wait for DOM to stop growing — see comment on lastTurnCountByConv.
+      // A chat that just rendered partially gets one more pass; only on
+      // the second pass with the same turn count do we proceed.
+      const prevCount = lastTurnCountByConv.get(convId);
+      lastTurnCountByConv.set(convId, turns.length);
+      if (prevCount !== turns.length) {
+        console.log(tag, 'defer: turn count not yet stable', {
+          convId,
+          previous: prevCount,
+          current: turns.length,
+        });
+        // Schedule another runExport so we don't depend on external
+        // mutations to fire — the DOM may have settled with no further
+        // mutations to observe.
+        schedule(triggerDebounceMs);
         return;
       }
 

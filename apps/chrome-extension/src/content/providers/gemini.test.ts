@@ -167,35 +167,36 @@ describe('computeTodaySlice', () => {
     expect(computeTodaySlice([t('hi')], [])).toEqual([]);
   });
 
-  it('matches turns whose user prompt appears in today, regardless of position', () => {
-    const turns = [t('history-1'), t('today-A'), t('history-2'), t('today-B')];
-    const result = computeTodaySlice(turns, ['today-B', 'today-A']);
-    // Both today-A and today-B are matched. Output preserves DOM order
-    // (NOT myactivity order), so today-A comes first.
+  it('returns the contiguous tail whose user prompts each match an unclaimed myactivity entry', () => {
+    const turns = [t('history-1'), t('history-2'), t('today-A'), t('today-B')];
+    // myactivity ordering doesn't matter — the slicer tries every
+    // unclaimed entry until it finds a match.
+    const result = computeTodaySlice(turns, ['today-A', 'today-B']);
     expect(result).toEqual([t('today-A'), t('today-B')]);
   });
 
-  it('regression: matches a today turn even when the chat tail is non-today (multi-day chat)', () => {
-    // The previous greedy-from-tail logic would skip this entirely because
-    // turn[2] ("git…clone") didn't match the only today entry. The new
-    // logic finds turn[1] ("today-A") in the middle.
-    const turns = [t('history-1'), t('today-A'), t('git clone something')];
-    const result = computeTodaySlice(turns, ['today-A']);
-    expect(result).toEqual([t('today-A')]);
+  it('stops walking as soon as a turn does NOT match any unclaimed myactivity entry', () => {
+    const turns = [t('old'), t('today-A'), t('today-B')];
+    const result = computeTodaySlice(turns, ['today-A', 'today-B']);
+    expect(result).toEqual([t('today-A'), t('today-B')]);
+    // turn[0] (=old) didn't match → not included; the walker stopped.
   });
 
-  it('returns [] when no turn matches', () => {
-    const turns = [t('today-A')];
-    expect(computeTodaySlice(turns, ['unrelated'])).toEqual([]);
+  it('returns [] when the tail (most recent turn) does not match', () => {
+    // KNOWN LIMITATION: today's turn in the middle of an older chat is
+    // missed. This is the deliberate trade-off — see the function
+    // docstring. The user-facing fallback is to open the chat manually.
+    const turns = [t('today-A'), t('not-in-today')];
+    expect(computeTodaySlice(turns, ['today-A'])).toEqual([]);
   });
 
-  it('claim-once: a single myactivity entry only matches one turn even if two have the same text', () => {
+  it('does NOT reuse the same myactivity entry for two different turns', () => {
     const turns = [t('A'), t('A')];
-    expect(computeTodaySlice(turns, ['A'])).toEqual([t('A')]); // only the first
+    expect(computeTodaySlice(turns, ['A'])).toEqual([t('A')]); // only the tail one
   });
 
-  it('claim-once allows two duplicate prompts when myactivity has two entries', () => {
-    const turns = [t('A'), t('A')];
+  it('matches two duplicate tail prompts when myactivity has two matching entries', () => {
+    const turns = [t('history'), t('A'), t('A')];
     expect(computeTodaySlice(turns, ['A', 'A'])).toEqual([t('A'), t('A')]);
   });
 
@@ -205,7 +206,7 @@ describe('computeTodaySlice', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('skips turns with empty userText without breaking iteration', () => {
+  it('stops on the first turn with empty userText', () => {
     const turns = [t(''), t('today-A')];
     expect(computeTodaySlice(turns, ['today-A'])).toEqual([t('today-A')]);
   });
@@ -214,6 +215,19 @@ describe('computeTodaySlice', () => {
     const turns = [t('你说\n\n东亚文化圈和基督文化圈对比')];
     const result = computeTodaySlice(turns, ['东亚文化圈和基督文化圈对比']);
     expect(result).toHaveLength(1);
+  });
+
+  it('is robust against a single chat happening to contain the same text as a today prompt in an old position', () => {
+    // Regression for the false-positive flood: if the user historically
+    // asked "favourite-prompt" in this chat but today asked it elsewhere,
+    // the tail constraint stops the walker before reaching the historical
+    // occurrence. The chat is correctly excluded.
+    const turns = [
+      t('favourite-prompt'),
+      t('and then we talked about something else'),
+      t('and another unrelated question'),
+    ];
+    expect(computeTodaySlice(turns, ['favourite-prompt'])).toEqual([]);
   });
 });
 

@@ -30,7 +30,15 @@ const commandQueue = [];
 /** @type {Array<{res: import('node:http').ServerResponse, timer: NodeJS.Timeout}>} */
 const longPollWaiters = [];
 const LONG_POLL_TIMEOUT_MS = 25_000;
+// Health watchdog: if no client has long-polled /command for this long, the
+// SW is almost certainly asleep. Print a one-line warning per minute so the
+// dev notices instead of silently waiting on `dev:trigger` round-trips that
+// will never complete.
+const SW_HEARTBEAT_GRACE_MS = 90_000;
+const SW_HEARTBEAT_WARN_INTERVAL_MS = 60_000;
 let logCount = 0;
+let lastLongPollAt = Date.now();
+let lastWarnAt = 0;
 const startedAt = Date.now();
 
 function deliverNext() {
@@ -125,6 +133,7 @@ const server = http.createServer(async (req, res) => {
       // return it. If nothing arrives in LONG_POLL_TIMEOUT_MS, return 204.
       // This keeps the extension's MV3 service worker alive — SWs are
       // killed after 30s idle, but an in-flight fetch counts as activity.
+      lastLongPollAt = Date.now();
       if (commandQueue.length > 0) {
         const next = commandQueue.shift();
         res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
@@ -184,3 +193,16 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[dev-log-server] log file: ${LOG_PATH}`);
   console.log('[dev-log-server] tail with: tail -F', LOG_PATH);
 });
+
+// SW health watchdog: warn once per minute if the SW hasn't long-polled
+// /command for SW_HEARTBEAT_GRACE_MS. Doesn't fix anything, but turns
+// "dev:trigger silent" into "obvious diagnostic line in dev:logs terminal".
+setInterval(() => {
+  const idleMs = Date.now() - lastLongPollAt;
+  if (idleMs < SW_HEARTBEAT_GRACE_MS) return;
+  if (Date.now() - lastWarnAt < SW_HEARTBEAT_WARN_INTERVAL_MS) return;
+  lastWarnAt = Date.now();
+  console.warn(
+    `[dev-log-server] WARNING: no SW long-poll for ${Math.round(idleMs / 1000)}s — extension service worker may be asleep. Wake it: chrome://extensions → Weaver Octopus → Service Worker link, OR refresh claude.ai / gemini.google.com tab.`,
+  );
+}, 15_000);

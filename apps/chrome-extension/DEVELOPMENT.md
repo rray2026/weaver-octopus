@@ -101,6 +101,27 @@ auto-reload poller, log forwarder, command poller, and the
 http://127.0.0.1/* permission are all absent — no extra requests, no
 extra storage keys, no dev surface in the shipped bundle.
 
+### ⚠️ After every `pnpm build` (production), rebuild dev
+
+`pnpm build` (prod) overwrites `dist/` with code that has `__WEAVER_DEV__`
+folded to false — dev infrastructure (auto-reload poller, log forwarder,
+command poller) is tree-shaken out. The auto-reload poller still in the
+running SW notices the changed `build_id` and reloads, **landing the
+prod dist as the live extension**. From that moment, `dev:trigger`
+returns 202 but the command sits unconsumed because no one is polling
+`/command`.
+
+Recovery:
+
+```bash
+pnpm --filter @weaver-octopus/chrome-extension build:dev
+# wait for the running SW's auto-reload poller to land it; if the SW
+# itself was prod (no poller), click ↺ on chrome://extensions
+```
+
+Better: run `pnpm dev:hot` for the whole session (it stays in dev) and
+only run `pnpm build` once, just before pushing.
+
 ### Debugging methodology that worked in this codebase
 
 Sequence that consistently led to root cause:

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "vite build",
+    "build:dev": "WEAVER_DEV=1 vite build",
     "dev": "vite build --watch",
     "dev:hot": "WEAVER_DEV=1 vite build --watch",
     "dev:logs": "node scripts/dev-log-server.mjs",

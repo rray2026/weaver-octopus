@@ -109,49 +109,57 @@ export function cleanTitle(rawTitle: string): string {
   return rawTitle.replace(/\s*[-–—]\s*Gemini.*$/i, '').trim();
 }
 
-/** Returns the subset of turns whose user prompt matches some today
- *  myactivity entry. Each myactivity entry is claimed at most once (a
- *  user prompt repeated within the chat must correspond to two distinct
- *  myactivity entries to be matched twice). Output preserves DOM order.
+/** Returns the longest contiguous tail of `turns` whose user prompts each
+ *  match a today myactivity entry, walking newest-first. The same
+ *  myactivity entry is never reused across two turns within one call.
  *
- *  Replaces the previous "greedy from tail" semantics, which assumed
- *  today's turns were always a contiguous suffix of the conversation:
+ *  Why the "tail" constraint and not a free front-to-back scan:
+ *  - myactivity is a global timeline of today's prompts but doesn't tell
+ *    us *which* chat each prompt belongs to. If the user asks the same
+ *    or similar prompt in N historical chats, a free scan would match
+ *    each chat — across chats myactivity entries can be re-attributed,
+ *    causing massive false positives during backfill.
+ *  - Real-world today-turn placement is overwhelmingly at the tail: a
+ *    user opening or returning to a chat to ask a question puts the new
+ *    turn at the end. The "today turn in the middle of a multi-day
+ *    chat" case is rare; we accept missing it as a trade-off for not
+ *    flooding downloads with historical content.
  *
- *  - The old behaviour broke for chats spanning multiple days where the
- *    user kept asking new (non-today) questions in the same conversation
- *    after asking a today question — today's match in the middle was
- *    invisible to the walker, so the chat got skipped entirely.
- *  - It also produced non-deterministic backfill outcomes: a chat that
- *    happened to render the today turn last during a partial DOM tick
- *    would download successfully, then later (with the full DOM) get
- *    skipped because a non-today turn now sat at the tail.
- *
- *  The new algorithm scans front-to-back and never decides based on tail
- *  position alone. */
+ *  Trade-off summary:
+ *  - false negative (rare): a chat with today's question buried in the
+ *    middle of older turns is skipped — the user can open it manually
+ *    and the live orchestrator will then capture it as the user's next
+ *    turn appends to the tail.
+ *  - false positive (would be common with claim-once, now eliminated):
+ *    historical chat re-downloaded because some old turn happens to
+ *    contain text similar to today's prompt. */
 export function computeTodaySlice(
   turns: GeminiTurn[],
   todayPrompts: string[],
 ): GeminiTurn[] {
   if (!Array.isArray(todayPrompts) || todayPrompts.length === 0) return [];
+  let cutFrom = turns.length;
   const claimed = new Set<number>();
-  const out: GeminiTurn[] = [];
-  for (const turn of turns) {
-    const u = turn.userText;
-    if (!u) continue;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const userText = turns[i]!.userText;
+    if (!userText) break;
     let matched = -1;
+    // Try every unclaimed myactivity entry — order in myactivity doesn't
+    // matter (the original "newest-first index" constraint relied on
+    // myactivity ordering matching chat ordering, which doesn't always
+    // hold).
     for (let j = 0; j < todayPrompts.length; j++) {
       if (claimed.has(j)) continue;
-      if (matchesPrompt(u, todayPrompts[j] ?? '')) {
+      if (matchesPrompt(userText, todayPrompts[j] ?? '')) {
         matched = j;
         break;
       }
     }
-    if (matched >= 0) {
-      claimed.add(matched);
-      out.push(turn);
-    }
+    if (matched < 0) break;
+    claimed.add(matched);
+    cutFrom = i;
   }
-  return out;
+  return turns.slice(cutFrom);
 }
 
 /** Returns true iff `userText` (as rendered in the chat DOM) and
@@ -261,18 +269,20 @@ export function traceSliceMismatch(
     log(`  turn[${i}] user=${JSON.stringify(turns[i]!.userText)} → norm=${JSON.stringify(normalizeForMatch(turns[i]!.userText))}`);
   }
   if (todayPrompts.length === 0) return;
-  log('[gemini:slice-trace] walking front→back, claim-once:');
+  log('[gemini:slice-trace] walking newest→oldest from tail:');
   const claimed = new Set<number>();
-  for (let i = 0; i < turns.length; i++) {
+  let stopped = false;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (stopped) break;
     const userText = turns[i]!.userText;
     if (!userText) {
-      log(`  turn[${i}] EMPTY userText → skip`);
-      continue;
+      log(`  turn[${i}] EMPTY userText → stop`);
+      break;
     }
     const u = normalizeForMatch(userText);
     if (!u) {
-      log(`  turn[${i}] norm is empty → skip`);
-      continue;
+      log(`  turn[${i}] norm is empty → stop`);
+      break;
     }
     let matched = -1;
     for (let j = 0; j < todayPrompts.length; j++) {
@@ -290,13 +300,14 @@ export function traceSliceMismatch(
       }
     }
     if (matched < 0) {
-      log(`  turn[${i}] NO MATCH against any unclaimed myactivity entry`);
+      log(`  turn[${i}] NO MATCH → stop walking; this turn (and everything older) is excluded from the slice`);
+      stopped = true;
       continue;
     }
     claimed.add(matched);
     log(`  turn[${i}] ✓ matched myactivity[${matched}]`);
   }
-  log(`[gemini:slice-trace] done. matched ${claimed.size} of ${todayPrompts.length} myactivity entries`);
+  log(`[gemini:slice-trace] done. matched ${claimed.size} of ${todayPrompts.length} myactivity entries (slice = trailing ${claimed.size} turns)`);
 }
 
 /** Cheap content-fingerprint for in-tab dedup (avoid re-sending the same
