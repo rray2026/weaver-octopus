@@ -32,6 +32,14 @@ export interface DevCommandHandlers {
   reloadExtension: () => void;
   /** Read selected (or all) keys from chrome.storage.local and log them. */
   dumpStorage: (keys?: string[]) => Promise<unknown> | unknown;
+  /** Tell the active claude.ai / gemini.google.com tab to dump its chat DOM
+   *  (turns, selector probes, sidebar). Used to diagnose selector breakage
+   *  when the SPA changes its markup. Optional `target` picks a host. */
+  snapshotDom: (target?: 'claude' | 'gemini') => Promise<unknown> | unknown;
+  /** One-shot health report: extension version, storage summary, matched
+   *  tabs, recent backfill state. Cheaper than tail -F + multiple
+   *  dump-storage calls. */
+  diagnose: () => Promise<unknown> | unknown;
 }
 
 interface DevCommand {
@@ -149,6 +157,20 @@ async function executeCommand(
       const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : undefined;
       const result = await handlers.dumpStorage(keys);
       console.log(TAG, 'dump-storage', result);
+      return;
+    }
+    case 'snapshot-dom': {
+      const target =
+        cmd['target'] === 'claude' || cmd['target'] === 'gemini'
+          ? (cmd['target'] as 'claude' | 'gemini')
+          : undefined;
+      const result = await handlers.snapshotDom(target);
+      console.log(TAG, 'snapshot-dom', result);
+      return;
+    }
+    case 'diagnose': {
+      const result = await handlers.diagnose();
+      console.log(TAG, 'diagnose', result);
       return;
     }
     default:

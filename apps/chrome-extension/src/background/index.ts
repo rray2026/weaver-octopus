@@ -83,6 +83,93 @@ if (__WEAVER_DEV__) {
       const items = await chrome.storage.local.get(keys ?? null);
       return items;
     },
+    snapshotDom: async (target) => {
+      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+      const candidates = target === 'claude'
+        ? claudeTabs
+        : target === 'gemini'
+          ? geminiTabs
+          : [...claudeTabs, ...geminiTabs];
+      if (candidates.length === 0) {
+        return { ok: false, error: 'no matching tab open' };
+      }
+      // Prefer the active tab if multiple candidates.
+      const tab = candidates.find((t) => t.active) ?? candidates[0]!;
+      if (tab.id == null) return { ok: false, error: 'tab has no id' };
+      try {
+        const ack = await chrome.tabs.sendMessage(tab.id, { type: 'SNAPSHOT_DOM' });
+        return { ok: true, tabId: tab.id, tabUrl: tab.url, snapshot: ack?.snapshot, ackError: ack?.error };
+      } catch (err) {
+        return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
+      }
+    },
+    diagnose: async () => {
+      const manifest = chrome.runtime.getManifest();
+      const storage = (await chrome.storage.local.get(null)) as Record<string, unknown>;
+      // Summarise large keys to keep the log line readable.
+      const summary: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(storage)) {
+        if (key === 'convHashes' && value && typeof value === 'object') {
+          const entries = Object.keys(value as Record<string, string>);
+          summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
+        } else if (key === 'claudeApiHeaders' && value && typeof value === 'object') {
+          // Don't log header values (may include tokens) — just key names.
+          summary[key] = { headerKeys: Object.keys(value as Record<string, string>).sort() };
+        } else if (key === 'backfillProgress' && value && typeof value === 'object') {
+          const prog = value as {
+            state?: string;
+            startedAt?: number;
+            finishedAt?: number;
+            errorMessage?: string;
+            perProvider?: Record<
+              string,
+              { total?: number; done?: number; failed?: number; skipped?: number; log?: unknown[] }
+            >;
+          };
+          const perProvider: Record<string, unknown> = {};
+          for (const [p, pp] of Object.entries(prog.perProvider ?? {})) {
+            perProvider[p] = {
+              total: pp.total,
+              done: pp.done,
+              failed: pp.failed,
+              skipped: pp.skipped,
+              recentLog: Array.isArray(pp.log) ? pp.log.slice(-10) : [],
+            };
+          }
+          summary[key] = {
+            state: prog.state,
+            startedAt: prog.startedAt,
+            finishedAt: prog.finishedAt,
+            errorMessage: prog.errorMessage,
+            perProvider,
+          };
+        } else {
+          summary[key] = value;
+        }
+      }
+      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
+      const myactivityTabs = await chrome.tabs.query({
+        url: 'https://myactivity.google.com/*',
+      });
+      const tabs = [...claudeTabs, ...geminiTabs, ...myactivityTabs].map((t) => ({
+        id: t.id,
+        url: t.url,
+        status: t.status,
+        active: t.active,
+      }));
+      return {
+        extensionId: chrome.runtime.id,
+        version: manifest.version,
+        permissions: {
+          permissions: manifest.permissions ?? [],
+          hostPermissions: manifest.host_permissions ?? [],
+        },
+        tabs,
+        storage: summary,
+      };
+    },
   });
 }
 

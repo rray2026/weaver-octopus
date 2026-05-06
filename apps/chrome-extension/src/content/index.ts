@@ -1,5 +1,5 @@
-import { claudeBackfillAdapter } from './backfill/claude.js';
-import { geminiBackfillAdapter } from './backfill/gemini.js';
+import { claudeBackfillAdapter, collectClaudeChatLinks } from './backfill/claude.js';
+import { geminiBackfillAdapter, collectGeminiChatLinks } from './backfill/gemini.js';
 import { runBackfill } from './backfill/runner.js';
 import { startClaudeFetchOrchestrator } from './claude-fetch-orchestrator.js';
 import { startClaudeHeadersCache } from './claude-headers-cache.js';
@@ -8,6 +8,8 @@ import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
 import { startContentDevLogForwarder } from './dev-log-content.js';
+import { captureDomSnapshot as devCaptureDomSnapshot } from '../dev/dom-snapshot.js';
+import { scrapeTurns as scrapeGeminiTurns } from './providers/gemini.js';
 import type {
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,
@@ -72,6 +74,27 @@ async function startClaudeWithConfiguredMode(): Promise<void> {
 function installBackfillListener(provider: Provider): void {
   let running = false;
   chrome.runtime.onMessage.addListener((msg: BackgroundToContentMessage, _sender, sendResponse) => {
+    if (msg.type === 'SNAPSHOT_DOM') {
+      // Dev-only: dump the current chat DOM for offline analysis.
+      // The whole branch is dead-code-eliminated in prod via __WEAVER_DEV__.
+      if (!__WEAVER_DEV__) {
+        sendResponse({ ok: false, error: 'snapshot only available in dev build' });
+        return false;
+      }
+      const scrape =
+        provider === 'claude' ? () => [] : () => scrapeGeminiTurns(document);
+      const enumerate = () =>
+        provider === 'claude'
+          ? collectClaudeChatLinks(document)
+          : collectGeminiChatLinks(document);
+      try {
+        const snapshot = devCaptureDomSnapshot(scrape, enumerate);
+        sendResponse({ ok: true, snapshot });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err) });
+      }
+      return false;
+    }
     if (msg.type === 'BACKFILL_PING') {
       let version: string | undefined;
       let extensionId: string | undefined;

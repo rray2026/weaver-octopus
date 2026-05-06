@@ -81,7 +81,30 @@ export type BackgroundToContentMessage =
        *  this message simply isn't registered and chrome.tabs.sendMessage
        *  rejects, signalling the background to reload the tab. */
       type: 'BACKFILL_PING';
+    }
+  | {
+      /** Dev-only — dispatched by `dev:trigger '{"action":"snapshot-dom"}'`.
+       *  Content script returns a structured dump of the current chat DOM
+       *  (turn texts, selector hits with truncated outerHTML, sidebar
+       *  links) so the developer can inspect Gemini/Claude DOM structure
+       *  offline. Tree-shaken in production. */
+      type: 'SNAPSHOT_DOM';
     };
+
+export interface DomSnapshotResult {
+  url: string;
+  hostname: string;
+  title: string;
+  turnsCount: number;
+  /** scrapeTurns() output — text only, no HTML. */
+  turns: Array<{ userText: string; modelText: string }>;
+  /** For each candidate selector, count + outerHTML of the first hit
+   *  (truncated to 800 chars). Lets us see which selectors are matching
+   *  and inspect their actual structure. */
+  selectorProbes: Array<{ selector: string; count: number; firstOuterHtmlTruncated?: string }>;
+  /** sidebar links the backfill adapter would enumerate. */
+  sidebar: Array<{ href: string; title?: string }>;
+}
 
 export interface BackfillPingAck {
   ok: true;

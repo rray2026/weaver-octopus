@@ -88,6 +88,21 @@ pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
 
 # Force a full extension reload (rarely needed — auto-reload covers most)
 pnpm --filter @weaver-octopus/chrome-extension dev:trigger '{"action":"reload"}'
+
+# Read selected (or all) keys from chrome.storage.local
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"dump-storage","keys":["todayGemini","convHashes"]}'
+
+# Dump the active claude.ai / gemini.google.com tab's chat DOM —
+# selector hit counts + first-match outerHTML truncated, scrapeTurns
+# output, sidebar links the backfill adapter would enumerate. Useful
+# when SPA changes break selectors. `target` optional ('claude'|'gemini').
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
+  '{"action":"snapshot-dom","target":"gemini"}'
+
+# One-shot health report: extension version + permissions + open tabs +
+# storage summary (large keys truncated, sensitive values redacted).
+pnpm --filter @weaver-octopus/chrome-extension dev:trigger '{"action":"diagnose"}'
 ```
 
 Each command is logged into `.dev-runtime.log` along with whatever the
