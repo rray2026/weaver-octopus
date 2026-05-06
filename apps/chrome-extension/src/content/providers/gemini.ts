@@ -370,3 +370,21 @@ export function sliceFingerprint(slice: GeminiTurn[]): string {
     .join(',');
   return `${slice.length}:${lengths}:${tail}`;
 }
+
+/** Stability fingerprint over ALL scraped turns. The orchestrator compares
+ *  this between successive scrapes to confirm the DOM has truly settled
+ *  before trusting the slice. Counting alone is too weak: during SPA
+ *  navigation Gemini can leave a stale turn from the previously-viewed chat
+ *  in the DOM, and if the new chat happens to land on the same turn count
+ *  the count-only check passes while content is still mixed. The
+ *  per-turn prefix below changes whenever any turn's user/model body
+ *  shifts, so a stale-then-replaced turn forces another defer. */
+export function turnsFingerprint(turns: GeminiTurn[]): string {
+  return turns
+    .map(
+      (t) =>
+        `${t.userText.length}/${t.userText.slice(0, 60)}|` +
+        `${t.modelText.length}/${t.modelText.slice(0, 60)}`,
+    )
+    .join('§');
+}

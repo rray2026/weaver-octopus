@@ -11,6 +11,7 @@ import {
   stripModelWrapper,
   stripUserWrapper,
   traceSliceMismatch,
+  turnsFingerprint,
   type GeminiTurn,
 } from './gemini.js';
 
@@ -435,6 +436,45 @@ describe('sliceFingerprint', () => {
       { userText: 'q2', modelText: 'a2' },
     ];
     expect(sliceFingerprint(a)).not.toBe(sliceFingerprint(b));
+  });
+});
+
+describe('turnsFingerprint', () => {
+  it('is stable for identical turn lists', () => {
+    const turns: GeminiTurn[] = [
+      { userText: 'q1', modelText: 'r1' },
+      { userText: 'q2', modelText: 'r2' },
+    ];
+    expect(turnsFingerprint(turns)).toBe(turnsFingerprint(turns));
+  });
+
+  it('changes when turn count changes', () => {
+    const a: GeminiTurn[] = [{ userText: 'q1', modelText: 'r1' }];
+    const b: GeminiTurn[] = [
+      { userText: 'q1', modelText: 'r1' },
+      { userText: 'q2', modelText: 'r2' },
+    ];
+    expect(turnsFingerprint(a)).not.toBe(turnsFingerprint(b));
+  });
+
+  it('changes when any turn body shifts (catches stale-DOM swap during SPA nav)', () => {
+    // Same count, but the last turn changes content (stale leaked from
+    // previously-viewed chat → swapped to the actual new turn).
+    const stale: GeminiTurn[] = [
+      { userText: 'q', modelText: 'r' },
+      { userText: 'leaked WindowServer crash report …', modelText: 'old reply' },
+    ];
+    const settled: GeminiTurn[] = [
+      { userText: 'q', modelText: 'r' },
+      { userText: 'this chat actual newest turn', modelText: 'real reply' },
+    ];
+    expect(turnsFingerprint(stale)).not.toBe(turnsFingerprint(settled));
+  });
+
+  it('changes when only the body byte length differs (length is part of the key)', () => {
+    const a: GeminiTurn[] = [{ userText: 'short', modelText: 'r' }];
+    const b: GeminiTurn[] = [{ userText: 'short ', modelText: 'r' }];
+    expect(turnsFingerprint(a)).not.toBe(turnsFingerprint(b));
   });
 });
 

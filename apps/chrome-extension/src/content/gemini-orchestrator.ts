@@ -28,6 +28,7 @@ import {
   scrapeTurns,
   sliceFingerprint,
   traceSliceMismatch,
+  turnsFingerprint,
   type GeminiTurn,
 } from './providers/gemini.js';
 import type { ChatMessage, GeminiActivityIndex } from '../types/index.js';
@@ -66,14 +67,21 @@ export function startGeminiOrchestrator(
   let extensionInvalidated = false;
   let pendingTrigger: ReturnType<typeof setTimeout> | null = null;
   let lastUrl = location.href;
-  // Per-conversation, last observed `turns.length`. Used to defer processing
-  // until the DOM stops growing — Gemini's SPA renders chats progressively
-  // after navigation, so an early MutationObserver tick can see only a
-  // partial conversation. Acting on that produces non-deterministic
-  // backfill outcomes (a chat downloads or skips depending on which tick
-  // fires first). We require two consecutive runExport calls to see the
-  // same turn count before trusting it.
+  // Per-conversation, last observed `turns.length` AND a content fingerprint
+  // over those turns. Used to defer processing until the DOM stops growing
+  // — Gemini's SPA renders chats progressively after navigation, so an
+  // early MutationObserver tick can see only a partial conversation. Acting
+  // on that produces non-deterministic backfill outcomes.
+  //
+  // We require two consecutive runExport calls to see the same turn count
+  // AND the same fingerprint before trusting the slice. Count alone is too
+  // weak: during navigation Gemini sometimes leaves a stale turn from the
+  // previously-viewed chat in the DOM, and if the new chat lands on the
+  // same turn count the count-only check passes while content is still
+  // mixed (verified live: a chat ending with the wrong WindowServer crash
+  // turn skipped because the matcher's tail-walk hit that stale turn first).
   const lastTurnCountByConv = new Map<string, number>();
+  const lastTurnFingerprintByConv = new Map<string, string>();
 
   const hydrationPromise = hydrateHashes();
 
@@ -184,16 +192,20 @@ export function startGeminiOrchestrator(
         return;
       }
 
-      // Wait for DOM to stop growing — see comment on lastTurnCountByConv.
-      // A chat that just rendered partially gets one more pass; only on
-      // the second pass with the same turn count do we proceed.
+      // Wait for DOM to stop changing — see comment on lastTurnCountByConv.
+      // Two consecutive runExport calls must agree on BOTH turn count and
+      // content fingerprint; otherwise defer.
       const prevCount = lastTurnCountByConv.get(convId);
+      const prevTurnsFp = lastTurnFingerprintByConv.get(convId);
+      const turnsFp = turnsFingerprint(turns);
       lastTurnCountByConv.set(convId, turns.length);
-      if (prevCount !== turns.length) {
-        console.log(tag, 'defer: turn count not yet stable', {
+      lastTurnFingerprintByConv.set(convId, turnsFp);
+      if (prevCount !== turns.length || prevTurnsFp !== turnsFp) {
+        console.log(tag, 'defer: turns not yet stable', {
           convId,
-          previous: prevCount,
-          current: turns.length,
+          previousCount: prevCount,
+          currentCount: turns.length,
+          fingerprintChanged: prevTurnsFp !== undefined && prevTurnsFp !== turnsFp,
         });
         // Schedule another runExport so we don't depend on external
         // mutations to fire — the DOM may have settled with no further
