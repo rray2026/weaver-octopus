@@ -27,8 +27,30 @@ mkdirSync(dirname(LOG_PATH), { recursive: true });
 
 /** @type {Array<Record<string, unknown>>} */
 const commandQueue = [];
+/** @type {Array<{res: import('node:http').ServerResponse, timer: NodeJS.Timeout}>} */
+const longPollWaiters = [];
+const LONG_POLL_TIMEOUT_MS = 25_000;
 let logCount = 0;
 const startedAt = Date.now();
+
+function deliverNext() {
+  while (longPollWaiters.length > 0 && commandQueue.length > 0) {
+    const waiter = longPollWaiters.shift();
+    const cmd = commandQueue.shift();
+    if (!waiter || !cmd) continue;
+    clearTimeout(waiter.timer);
+    try {
+      waiter.res.writeHead(200, {
+        'content-type': 'application/json',
+        ...corsHeaders(),
+      });
+      waiter.res.end(JSON.stringify(cmd));
+    } catch {
+      // client gone — push the command back for the next waiter
+      commandQueue.unshift(cmd);
+    }
+  }
+}
 
 function corsHeaders() {
   return {
@@ -90,20 +112,43 @@ const server = http.createServer(async (req, res) => {
       }
       commandQueue.push(parsed);
       console.log('[dev-log-server] queued command', parsed);
+      // Wake any long-pollers immediately so the SW gets the command in
+      // milliseconds rather than waiting up to LONG_POLL_TIMEOUT_MS.
+      deliverNext();
       res.writeHead(202, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ ok: true, queued: parsed }));
       return;
     }
 
     if (req.method === 'GET' && req.url === '/command') {
-      const next = commandQueue.shift();
-      if (!next) {
-        res.writeHead(204, corsHeaders());
-        res.end();
+      // Long-poll: hold the request open until a command arrives, then
+      // return it. If nothing arrives in LONG_POLL_TIMEOUT_MS, return 204.
+      // This keeps the extension's MV3 service worker alive — SWs are
+      // killed after 30s idle, but an in-flight fetch counts as activity.
+      if (commandQueue.length > 0) {
+        const next = commandQueue.shift();
+        res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
+        res.end(JSON.stringify(next));
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
-      res.end(JSON.stringify(next));
+      const timer = setTimeout(() => {
+        const idx = longPollWaiters.findIndex((w) => w.res === res);
+        if (idx >= 0) longPollWaiters.splice(idx, 1);
+        try {
+          res.writeHead(204, corsHeaders());
+          res.end();
+        } catch {
+          /* connection already closed */
+        }
+      }, LONG_POLL_TIMEOUT_MS);
+      const waiter = { res, timer };
+      longPollWaiters.push(waiter);
+      // If the client disconnects (e.g. SW reloaded), drop the waiter.
+      req.on('close', () => {
+        clearTimeout(timer);
+        const idx = longPollWaiters.indexOf(waiter);
+        if (idx >= 0) longPollWaiters.splice(idx, 1);
+      });
       return;
     }
 

@@ -1,18 +1,22 @@
 // Dev-only command poller.
 //
-// Polls http://127.0.0.1:9876/command every few seconds. When the dev server
-// returns a queued command (200 + JSON), executes it. Used by Claude Code
-// (and the human) to drive specific scenarios without clicking through the
-// popup UI:
+// Issues a long-poll GET to http://127.0.0.1:9876/command. The dev server
+// holds the request open until a command is queued (or ~25s elapses), then
+// returns it; we execute and immediately re-issue. This serves two
+// purposes: instant command delivery (no 1.5s polling lag), AND keeping
+// the MV3 service worker alive — SWs are killed after 30s idle, but an
+// in-flight fetch counts as activity, so the loop is self-sustaining.
 //
-//   pnpm dev:trigger '{"action":"start-backfill","providers":["claude"]}'
+// On any error (server down, network glitch) we back off briefly and
+// retry; the SW may then go idle, but the next event (alarm, message,
+// fetch from the auto-reload poller) re-enters this loop.
 //
 // chrome.runtime.sendMessage from the SW back to the SW's own listener
 // isn't delivered, so action handlers are passed in via dependency
-// injection from src/background/index.ts (where they're already defined).
+// injection from src/background/index.ts.
 
 const POLL_URL = 'http://127.0.0.1:9876/command';
-const POLL_MS = 1500;
+const ERROR_BACKOFF_MS = 2_000;
 const TAG = '[weaver:dev-cmd]';
 
 export interface DevCommandHandlers {
@@ -38,29 +42,44 @@ let started = false;
 export function startDevCommandPoller(handlers: DevCommandHandlers): void {
   if (started) return;
   started = true;
-  console.log(TAG, 'poller started (every', POLL_MS, 'ms)');
-  setInterval(() => {
-    void poll(handlers);
-  }, POLL_MS);
+  console.log(TAG, 'long-poll loop started');
+  void runLoop(handlers);
 }
 
-async function poll(handlers: DevCommandHandlers): Promise<void> {
-  let cmd: DevCommand | null = null;
-  try {
-    const res = await fetch(POLL_URL, { cache: 'no-store' });
-    if (res.status === 204) return;
-    if (!res.ok) return;
-    cmd = (await res.json()) as DevCommand;
-  } catch {
-    return; // dev server not running
+async function runLoop(handlers: DevCommandHandlers): Promise<void> {
+  // Tight loop: each iteration is either an in-flight long-poll fetch
+  // (server holds it for ~25s) or a brief sleep on error. Either way,
+  // the SW has activity and won't be killed.
+  while (true) {
+    let cmd: DevCommand | null = null;
+    try {
+      const res = await fetch(POLL_URL, { cache: 'no-store' });
+      if (res.status === 204) {
+        // Server timed out without a command — re-loop immediately.
+        continue;
+      }
+      if (!res.ok) {
+        await sleep(ERROR_BACKOFF_MS);
+        continue;
+      }
+      cmd = (await res.json()) as DevCommand;
+    } catch {
+      // Server down or fetch aborted (e.g. SW being torn down).
+      await sleep(ERROR_BACKOFF_MS);
+      continue;
+    }
+    if (!cmd || typeof cmd !== 'object' || !cmd['action']) continue;
+    console.log(TAG, 'received', cmd);
+    try {
+      await executeCommand(cmd, handlers);
+    } catch (err) {
+      console.error(TAG, 'command failed', { cmd, err });
+    }
   }
-  if (!cmd || typeof cmd !== 'object' || !cmd['action']) return;
-  console.log(TAG, 'received', cmd);
-  try {
-    await executeCommand(cmd, handlers);
-  } catch (err) {
-    console.error(TAG, 'command failed', { cmd, err });
-  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function executeCommand(
