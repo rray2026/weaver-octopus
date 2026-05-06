@@ -1,6 +1,4 @@
-import { devOnInstalled, startDevAutoReload } from './dev-autoreload.js';
-import { startDevCommandPoller } from '../dev/command-poller.js';
-import { startDevLogForwarder } from '../dev/log-forwarder.js';
+import { startDevServer } from '@weaver-octopus/ext-dev-rpc/background';
 import type {
   BackfillLogEntry,
   BackfillProgress,
@@ -43,132 +41,158 @@ let lastActivityRefreshAt = 0;
 
 chrome.runtime.onInstalled.addListener((details) => {
   console.log(TAG, 'onInstalled', { reason: details.reason });
-  // Dev-only: refresh matched tabs after a self-reload triggered by the
-  // file-watcher poller below. Tree-shaken in production.
-  if (__WEAVER_DEV__) void devOnInstalled(details);
 });
 
-// Dev-only: poll dist/build_id.txt and chrome.runtime.reload() on change
-// so each `WEAVER_DEV=1 pnpm dev` rebuild lands automatically. The const
-// gate ensures the import + call are dropped from production bundles.
+// Dev-only: wire @weaver-octopus/ext-dev-rpc — forwarder + auto-reload +
+// long-poll command queue. The whole call is dead-code-eliminated when
+// __WEAVER_DEV__ is false.
 if (__WEAVER_DEV__) {
-  startDevAutoReload();
-  // Forward console.* into the localhost dev-log-server so Claude Code can
-  // tail .dev-runtime.log without DevTools.
-  startDevLogForwarder('background');
-  // Pull commands queued by `pnpm dev:trigger` and dispatch them via the
-  // same internal helpers the popup uses. SW-to-self chrome.runtime
-  // messages aren't delivered, so we hand the helpers in directly.
-  startDevCommandPoller({
-    startBackfill: (opts) =>
-      startBackfill(opts.providers, '[dev]', {
-        intervalMinSec: opts.intervalMinSec,
-        intervalMaxSec: opts.intervalMaxSec,
-      }),
-    stopBackfill: () => stopBackfill('[dev]'),
-    resetCache: () =>
-      chrome.storage.local.remove([
-        'convHashes',
-        'lastDownload',
-        'claudeApiHeaders',
-        'claudeOrgId',
-        'todayGemini',
-        BACKFILL_PROGRESS_KEY,
-        BACKFILL_STOP_FLAG,
-      ]),
-    setClaudeMode: (mode) => chrome.storage.local.set({ claudeCaptureMode: mode }),
-    openTab: (url) => chrome.tabs.create({ url, active: true }),
-    reloadExtension: () => chrome.runtime.reload(),
-    dumpStorage: async (keys) => {
-      const items = await chrome.storage.local.get(keys ?? null);
-      return items;
-    },
-    snapshotDom: async (target) => {
-      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
-      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
-      const candidates = target === 'claude'
-        ? claudeTabs
-        : target === 'gemini'
-          ? geminiTabs
-          : [...claudeTabs, ...geminiTabs];
-      if (candidates.length === 0) {
-        return { ok: false, error: 'no matching tab open' };
-      }
-      // Prefer the active tab if multiple candidates.
-      const tab = candidates.find((t) => t.active) ?? candidates[0]!;
-      if (tab.id == null) return { ok: false, error: 'tab has no id' };
-      try {
-        const ack = await chrome.tabs.sendMessage(tab.id, { type: 'SNAPSHOT_DOM' });
-        return { ok: true, tabId: tab.id, tabUrl: tab.url, snapshot: ack?.snapshot, ackError: ack?.error };
-      } catch (err) {
-        return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
-      }
-    },
-    diagnose: async () => {
-      const manifest = chrome.runtime.getManifest();
-      const storage = (await chrome.storage.local.get(null)) as Record<string, unknown>;
-      // Summarise large keys to keep the log line readable.
-      const summary: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(storage)) {
-        if (key === 'convHashes' && value && typeof value === 'object') {
-          const entries = Object.keys(value as Record<string, string>);
-          summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
-        } else if (key === 'claudeApiHeaders' && value && typeof value === 'object') {
-          // Don't log header values (may include tokens) — just key names.
-          summary[key] = { headerKeys: Object.keys(value as Record<string, string>).sort() };
-        } else if (key === 'backfillProgress' && value && typeof value === 'object') {
-          const prog = value as {
-            state?: string;
-            startedAt?: number;
-            finishedAt?: number;
-            errorMessage?: string;
-            perProvider?: Record<
-              string,
-              { total?: number; done?: number; failed?: number; skipped?: number; log?: unknown[] }
-            >;
+  startDevServer({
+    source: 'background',
+    handlers: {
+      'start-backfill': async (cmd) => {
+        const rawProviders = Array.isArray(cmd['providers'])
+          ? (cmd['providers'] as unknown[])
+          : ['claude', 'gemini'];
+        const providers = rawProviders.filter(
+          (p): p is Provider => p === 'claude' || p === 'gemini',
+        );
+        return startBackfill(providers, '[dev]', {
+          intervalMinSec:
+            typeof cmd['intervalMinSec'] === 'number' ? cmd['intervalMinSec'] : undefined,
+          intervalMaxSec:
+            typeof cmd['intervalMaxSec'] === 'number' ? cmd['intervalMaxSec'] : undefined,
+        });
+      },
+      'stop-backfill': () => stopBackfill('[dev]'),
+      'reset-cache': () =>
+        chrome.storage.local.remove([
+          'convHashes',
+          'lastDownload',
+          'claudeApiHeaders',
+          'claudeOrgId',
+          'todayGemini',
+          BACKFILL_PROGRESS_KEY,
+          BACKFILL_STOP_FLAG,
+        ]),
+      'set-claude-mode': (cmd) => {
+        const mode = cmd['mode'];
+        if (mode !== 'intercept' && mode !== 'fetch') return { error: 'bad mode' };
+        return chrome.storage.local.set({ claudeCaptureMode: mode });
+      },
+      'open': (cmd) =>
+        chrome.tabs.create({ url: String(cmd['url']), active: true }),
+      'reload': () => chrome.runtime.reload(),
+      'dump-storage': async (cmd) => {
+        const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : null;
+        return chrome.storage.local.get(keys);
+      },
+      'snapshot-dom': async (cmd) => {
+        const target =
+          cmd['target'] === 'claude' || cmd['target'] === 'gemini'
+            ? (cmd['target'] as 'claude' | 'gemini')
+            : undefined;
+        const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+        const geminiTabs = await chrome.tabs.query({
+          url: 'https://gemini.google.com/*',
+        });
+        const candidates =
+          target === 'claude'
+            ? claudeTabs
+            : target === 'gemini'
+              ? geminiTabs
+              : [...claudeTabs, ...geminiTabs];
+        if (candidates.length === 0) return { ok: false, error: 'no matching tab open' };
+        const tab = candidates.find((t) => t.active) ?? candidates[0]!;
+        if (tab.id == null) return { ok: false, error: 'tab has no id' };
+        try {
+          const ack = await chrome.tabs.sendMessage(tab.id, { type: 'SNAPSHOT_DOM' });
+          return {
+            ok: true,
+            tabId: tab.id,
+            tabUrl: tab.url,
+            snapshot: ack?.snapshot,
+            ackError: ack?.error,
           };
-          const perProvider: Record<string, unknown> = {};
-          for (const [p, pp] of Object.entries(prog.perProvider ?? {})) {
-            perProvider[p] = {
-              total: pp.total,
-              done: pp.done,
-              failed: pp.failed,
-              skipped: pp.skipped,
-              recentLog: Array.isArray(pp.log) ? pp.log.slice(-10) : [],
-            };
-          }
-          summary[key] = {
-            state: prog.state,
-            startedAt: prog.startedAt,
-            finishedAt: prog.finishedAt,
-            errorMessage: prog.errorMessage,
-            perProvider,
-          };
-        } else {
-          summary[key] = value;
+        } catch (err) {
+          return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
         }
-      }
-      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
-      const geminiTabs = await chrome.tabs.query({ url: 'https://gemini.google.com/*' });
-      const myactivityTabs = await chrome.tabs.query({
-        url: 'https://myactivity.google.com/*',
-      });
-      const tabs = [...claudeTabs, ...geminiTabs, ...myactivityTabs].map((t) => ({
-        id: t.id,
-        url: t.url,
-        status: t.status,
-        active: t.active,
-      }));
-      return {
-        extensionId: chrome.runtime.id,
-        version: manifest.version,
-        permissions: {
-          permissions: manifest.permissions ?? [],
-          hostPermissions: manifest.host_permissions ?? [],
-        },
-        tabs,
-        storage: summary,
-      };
+      },
+      'diagnose': async () => {
+        const manifest = chrome.runtime.getManifest();
+        const storage = (await chrome.storage.local.get(null)) as Record<string, unknown>;
+        const summary: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(storage)) {
+          if (key === 'convHashes' && value && typeof value === 'object') {
+            const entries = Object.keys(value as Record<string, string>);
+            summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
+          } else if (key === 'claudeApiHeaders' && value && typeof value === 'object') {
+            // Don't log header values (may include tokens) — just key names.
+            summary[key] = {
+              headerKeys: Object.keys(value as Record<string, string>).sort(),
+            };
+          } else if (key === 'backfillProgress' && value && typeof value === 'object') {
+            const prog = value as {
+              state?: string;
+              startedAt?: number;
+              finishedAt?: number;
+              errorMessage?: string;
+              perProvider?: Record<
+                string,
+                {
+                  total?: number;
+                  done?: number;
+                  failed?: number;
+                  skipped?: number;
+                  log?: unknown[];
+                }
+              >;
+            };
+            const perProvider: Record<string, unknown> = {};
+            for (const [p, pp] of Object.entries(prog.perProvider ?? {})) {
+              perProvider[p] = {
+                total: pp.total,
+                done: pp.done,
+                failed: pp.failed,
+                skipped: pp.skipped,
+                recentLog: Array.isArray(pp.log) ? pp.log.slice(-10) : [],
+              };
+            }
+            summary[key] = {
+              state: prog.state,
+              startedAt: prog.startedAt,
+              finishedAt: prog.finishedAt,
+              errorMessage: prog.errorMessage,
+              perProvider,
+            };
+          } else {
+            summary[key] = value;
+          }
+        }
+        const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+        const geminiTabs = await chrome.tabs.query({
+          url: 'https://gemini.google.com/*',
+        });
+        const myactivityTabs = await chrome.tabs.query({
+          url: 'https://myactivity.google.com/*',
+        });
+        const tabs = [...claudeTabs, ...geminiTabs, ...myactivityTabs].map((t) => ({
+          id: t.id,
+          url: t.url,
+          status: t.status,
+          active: t.active,
+        }));
+        return {
+          extensionId: chrome.runtime.id,
+          version: manifest.version,
+          permissions: {
+            permissions: manifest.permissions ?? [],
+            hostPermissions: manifest.host_permissions ?? [],
+          },
+          tabs,
+          storage: summary,
+        };
+      },
     },
   });
 }
@@ -186,21 +210,8 @@ type IncomingMessage =
   | { type: 'STOP_BACKFILL' };
 
 chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResponse) => {
-  // Dev-mode: content/popup forwarders ship console.* lines through the SW
-  // because they can't reach localhost themselves. Relay to the dev-log
-  // server. Tree-shaken in production.
-  if (__WEAVER_DEV__ && (message as { type?: string })?.type === '__DEV_LOG__') {
-    const payload = (message as { payload?: string }).payload;
-    if (typeof payload === 'string') {
-      void fetch('http://127.0.0.1:9876/log', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: payload,
-      }).catch(() => undefined);
-    }
-    sendResponse({ ok: true });
-    return false;
-  }
+  // Dev-only `__DEV_LOG__` relay is handled by `startDevServer` above
+  // (which registers its own onMessage listener). Production stays clean.
 
   const id = ++seq;
   const tag = `${TAG}#${id}`;

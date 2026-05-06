@@ -1,27 +1,31 @@
 #!/usr/bin/env node
-// Dev sidecar: HTTP loopback server that the extension's hot-reload build
-// posts logs and pulls scenario commands from. Append-only log file lives at
-// `apps/chrome-extension/.dev-runtime.log` so Claude Code (or `tail -F`) can
-// observe the running extension without DevTools.
+// @weaver-octopus/ext-dev-rpc — dev sidecar HTTP server.
 //
 // Endpoints:
 //   POST /log       body = JSON {source, level, args, ts} → append to log file
 //   POST /command   body = JSON {action, ...}             → push onto FIFO queue
-//   GET  /command   → pop next command (or 204 if empty)
-//   GET  /status    → returns server stats
+//   GET  /command   → long-poll, hold up to 25s for a queued command
+//   GET  /status    → server stats
 //
-// All endpoints respond with `Access-Control-Allow-Origin: *` so the
-// extension can call them with credentials:'omit'.
+// All endpoints set `Access-Control-Allow-Origin: *` so the extension
+// can fetch them from its SW (with the localhost host_permission).
+//
+// Defaults:
+//   port      9876  (override: EXT_DEV_RPC_PORT)
+//   log file  ./.dev-runtime.log relative to cwd  (override: EXT_DEV_RPC_LOG_PATH)
 
 import http from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const LOG_PATH =
-  process.env.WEAVER_DEV_LOG_PATH ?? resolve(__dirname, '..', '.dev-runtime.log');
-const PORT = Number(process.env.WEAVER_DEV_PORT ?? 9876);
+const LOG_PATH = resolve(
+  process.env.EXT_DEV_RPC_LOG_PATH ??
+    process.env.WEAVER_DEV_LOG_PATH ?? // backward-compat alias
+    './.dev-runtime.log',
+);
+const PORT = Number(
+  process.env.EXT_DEV_RPC_PORT ?? process.env.WEAVER_DEV_PORT ?? 9876,
+);
 
 mkdirSync(dirname(LOG_PATH), { recursive: true });
 

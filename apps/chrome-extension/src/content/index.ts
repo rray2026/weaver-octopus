@@ -7,7 +7,7 @@ import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
-import { startContentDevLogForwarder } from './dev-log-content.js';
+import { startDevForwarder as startContentDevLogForwarder } from '@weaver-octopus/ext-dev-rpc/content';
 import { captureDomSnapshot as devCaptureDomSnapshot } from '../dev/dom-snapshot.js';
 import { scrapeTurns as scrapeGeminiTurns } from './providers/gemini.js';
 import type {

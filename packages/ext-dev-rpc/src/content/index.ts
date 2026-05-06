@@ -1,25 +1,22 @@
 // Content-script-only console forwarder.
 //
-// Wraps console.log/info/warn/error and ships each call to the background
-// SW via chrome.runtime.sendMessage with type '__DEV_LOG__'. The background
-// then POSTs to the localhost dev-log-server so Claude Code (and `tail -F`)
-// can see content-script output without DevTools.
-//
-// Why this lives in src/content/ instead of reusing src/dev/log-forwarder.ts:
-// content scripts are classic scripts (not modules) and can't load Rollup
-// chunks. If both content and popup imported the shared forwarder, Rollup
-// would split it into chunks/log-forwarder.js — and content.js's static
-// `import` of that chunk would fail at runtime. Keeping a separate
-// implementation here ensures Rollup keeps the forwarder inlined into
-// content.js.
-//
-// In production builds __WEAVER_DEV__ is false; the entire module is
-// dead-code-eliminated by Rollup (every importer guards the call with
-// `if (__WEAVER_DEV__)`).
+// **Self-contained on purpose.** Content scripts in MV3 are classic
+// scripts that can't load Rollup chunks. If this file imported a
+// shared module that the popup also imports, Rollup would split it
+// into a chunk and the consumer's content.js would carry an `import`
+// statement that fails at runtime. Keep this file source-of-truth-ish
+// — duplicates ~30 lines from `_log-forwarder-impl.ts`.
 
 let installed = false;
 
-export function startContentDevLogForwarder(source: string): void {
+/** Wraps console.log/info/warn/error and ships each call to the
+ *  background SW via chrome.runtime.sendMessage with type '__DEV_LOG__'.
+ *  The background's startDevServer relays it to the local dev-log-server.
+ *
+ *  `source` is recorded on each log line so a log file from many tabs
+ *  can be filtered (e.g. 'content:claude.ai', 'content:gemini.google.com').
+ */
+export function startDevForwarder(source: string): void {
   if (installed) return;
   installed = true;
   const levels = ['log', 'info', 'warn', 'error'] as const;
@@ -27,14 +24,12 @@ export function startContentDevLogForwarder(source: string): void {
     const orig = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
       orig(...args);
-      forward(source, level, args);
+      relay(source, level, args);
     };
   }
-  // Also surface unhandled errors / rejections — content frames often
-  // don't have DevTools open on the right tab.
   if (typeof self !== 'undefined') {
     self.addEventListener('error', (ev: ErrorEvent) => {
-      forward(source, 'error', [
+      relay(source, 'error', [
         'unhandled error:',
         ev.message,
         ev.filename,
@@ -43,12 +38,12 @@ export function startContentDevLogForwarder(source: string): void {
       ]);
     });
     self.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
-      forward(source, 'error', ['unhandled rejection:', ev.reason]);
+      relay(source, 'error', ['unhandled rejection:', ev.reason]);
     });
   }
 }
 
-function forward(
+function relay(
   source: string,
   level: 'log' | 'info' | 'warn' | 'error',
   args: unknown[],

@@ -1,27 +1,22 @@
 #!/usr/bin/env node
-// CLI for queueing scenario commands the extension's dev-mode background
-// will pick up on its next /command poll. Useful from Claude Code: I can
-// run `pnpm dev:trigger '<json>'` to drive a specific feature without
-// touching the UI, then read .dev-runtime.log to see what happened.
+// @weaver-octopus/ext-dev-rpc — queue a scenario command on the dev
+// sidecar. The extension's background SW long-polls /command and runs
+// the matching handler.
 //
-// Built-in actions:
-//   start-backfill  {providers:[...], intervalMinSec?, intervalMaxSec?}
-//   stop-backfill
-//   reset-cache     (clears convHashes / lastDownload / claudeApiHeaders /
-//                    claudeOrgId / todayGemini)
-//   set-claude-mode {mode: 'intercept' | 'fetch'}
-//   open            {url: '...'}
-//   reload          (force chrome.runtime.reload)
+// Action set is **defined by the consumer** (in startDevServer's
+// `handlers` map). This CLI only ferries JSON; payloads are opaque.
 //
 // Usage (positional JSON):
-//   pnpm dev:trigger '{"action":"start-backfill","providers":["claude"]}'
+//   ext-dev-rpc-trigger '{"action":"reset-cache"}'
 //
 // Or piped via stdin:
-//   echo '{"action":"reset-cache"}' | pnpm dev:trigger
+//   echo '{"action":"open","url":"https://example.com"}' | ext-dev-rpc-trigger
 
 import http from 'node:http';
 
-const PORT = Number(process.env.WEAVER_DEV_PORT ?? 9876);
+const PORT = Number(
+  process.env.EXT_DEV_RPC_PORT ?? process.env.WEAVER_DEV_PORT ?? 9876,
+);
 
 async function readStdin() {
   return new Promise((resolveRead, rejectRead) => {

@@ -1,0 +1,12 @@
+{
+  "extends": "@weaver-octopus/tsconfig/base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "types": ["chrome", "node"]
+  },
+  "include": ["src", "bin"]
+}

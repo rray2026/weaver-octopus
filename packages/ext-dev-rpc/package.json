@@ -1,0 +1,53 @@
+{
+  "name": "@weaver-octopus/ext-dev-rpc",
+  "version": "0.1.0",
+  "description": "Sidecar RPC for driving a running Chrome extension from the terminal — hot-reload, console-log forwarding, scenario-command queue.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./background": {
+      "types": "./dist/background/index.d.ts",
+      "default": "./dist/background/index.js"
+    },
+    "./popup": {
+      "types": "./dist/popup/index.d.ts",
+      "default": "./dist/popup/index.js"
+    },
+    "./content": {
+      "types": "./dist/content/index.d.ts",
+      "default": "./dist/content/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite/index.d.ts",
+      "default": "./dist/vite/index.js"
+    }
+  },
+  "bin": {
+    "ext-dev-rpc-server": "./bin/server.mjs",
+    "ext-dev-rpc-trigger": "./bin/trigger.mjs"
+  },
+  "files": ["dist", "bin", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.320",
+    "@types/node": "^22.0.0",
+    "@weaver-octopus/tsconfig": "workspace:*",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  },
+  "peerDependencies": {
+    "vite": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": { "optional": true }
+  }
+}

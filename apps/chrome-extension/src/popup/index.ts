@@ -1,5 +1,5 @@
 import { computeRange, loadFilter, saveFilter } from '../dateFilter.js';
-import { startDevLogForwarder } from '../dev/log-forwarder.js';
+import { startDevForwarder } from '@weaver-octopus/ext-dev-rpc/popup';
 import type {
   BackfillProgress,
   BackfillProviderProgress,
@@ -383,5 +383,5 @@ export function sanitizeInterval(
   return { minSec, maxSec };
 }
 
-if (__WEAVER_DEV__) startDevLogForwarder('popup');
+if (__WEAVER_DEV__) startDevForwarder('popup');
 init();
