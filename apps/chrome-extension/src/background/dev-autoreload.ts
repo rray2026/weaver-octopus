@@ -1,4 +1,4 @@
-// Dev-only auto-reload loop.
+// Dev-only auto-reload loop + service-worker keepalive.
 //
 // Workflow:
 //   $ WEAVER_DEV=1 pnpm --filter @weaver-octopus/chrome-extension dev
@@ -13,6 +13,16 @@
 // refresh every tab matched by host_permissions so the new content
 // scripts inject, and clear the flag.
 //
+// Why we ALSO register a chrome.alarms keepalive:
+// - MV3 SWs are killed after ~30s of "inactivity"; long-poll fetches
+//   keep the SW alive while in flight, but a brief gap between fetch-
+//   resolve and next-fetch-start is enough for Chrome to terminate it.
+// - chrome.alarms persist across SW deaths and DO wake the SW when they
+//   fire. Registering a 30s alarm guarantees the SW wakes at least once
+//   per 30s, which re-runs all top-level code (including the long-poll
+//   loop in command-poller). Combined: long-poll keeps SW alive while
+//   active, alarm wakes it back up if it ever idles out anyway.
+//
 // In production builds __WEAVER_DEV__ is false and the entire module is
 // dead-code-eliminated by Rollup (the importer guards every entry point
 // with `if (__WEAVER_DEV__)`).
@@ -22,11 +32,29 @@ const TAB_REFRESH_FLAG_KEY = 'devNeedsTabRefresh';
 const POLL_MS = 2_000;
 const TAG = '[weaver:dev-autoreload]';
 
-/** Starts the polling loop. Idempotent — extra calls are no-ops. */
+const KEEPALIVE_ALARM = 'weaver-dev-keepalive';
+
+/** Starts the polling loop AND registers a 30s keepalive alarm. Idempotent. */
 export function startDevAutoReload(): void {
   if (started) return;
   started = true;
   console.log(TAG, 'poller started (every', POLL_MS, 'ms)');
+  // Alarm keepalive — see module header. The handler is intentionally
+  // tiny: just having an event handler fire is enough to wake the SW,
+  // which re-runs all top-level dev setup (long-poll command-poller etc).
+  try {
+    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === KEEPALIVE_ALARM) {
+        // No-op: the wake-up itself is the whole point. Top-level dev
+        // setup (which the SW boot re-ran) has already restarted the
+        // long-poll loop and console forwarder.
+        console.log(TAG, 'keepalive tick');
+      }
+    });
+  } catch (err) {
+    console.warn(TAG, 'keepalive alarm setup failed', err);
+  }
   let lastSeenId: string | null = null;
   setInterval(async () => {
     try {

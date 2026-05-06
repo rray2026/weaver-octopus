@@ -41,7 +41,8 @@
     "storage",
     "downloads",
     "tabs",
-    "tabGroups"
+    "tabGroups",
+    "alarms"
   ],
   "host_permissions": [
     "https://claude.ai/*",
