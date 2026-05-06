@@ -793,11 +793,22 @@ async function ensureContentScriptReady(
 
   const ping = async (): Promise<{ matched: boolean; reason?: string }> => {
     try {
+      console.log('[weaver:debug]', 'ping → tabs.sendMessage start', {
+        tabId,
+        provider,
+        ts: Date.now(),
+      });
       const ack = (await chrome.tabs.sendMessage(tabId, {
         type: 'BACKFILL_PING',
       } satisfies BackgroundToContentMessage)) as
         | { ok?: boolean; provider?: Provider; version?: string; extensionId?: string }
         | undefined;
+      console.log('[weaver:debug]', 'ping → tabs.sendMessage returned', {
+        tabId,
+        provider,
+        ack,
+        ts: Date.now(),
+      });
       if (!ack || !ack.ok) return { matched: false, reason: 'no ack' };
       if (ack.provider !== provider) {
         return { matched: false, reason: `provider mismatch (${ack.provider})` };
@@ -819,6 +830,12 @@ async function ensureContentScriptReady(
       return { matched: true };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
+      console.log('[weaver:debug]', 'ping → tabs.sendMessage threw', {
+        tabId,
+        provider,
+        reason,
+        ts: Date.now(),
+      });
       return { matched: false, reason };
     }
   };

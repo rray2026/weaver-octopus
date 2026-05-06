@@ -92,6 +92,12 @@ function installBackfillListener(provider: Provider): void {
       return false;
     }
     if (msg.type === 'BACKFILL_PING') {
+      // DEBUG: confirm renderer is processing the inbound message
+      console.log('[weaver:debug]', 'BACKFILL_PING received', {
+        provider,
+        href: location.href,
+        ts: Date.now(),
+      });
       let version: string | undefined;
       let extensionId: string | undefined;
       try {
@@ -103,6 +109,11 @@ function installBackfillListener(provider: Provider): void {
         // version check below will then detect the mismatch and reload.
       }
       sendResponse({ ok: true, provider, version, extensionId });
+      console.log('[weaver:debug]', 'BACKFILL_PING sendResponse done', {
+        provider,
+        ok: true,
+        ts: Date.now(),
+      });
       return false;
     }
     if (msg.type !== 'BACKFILL_RUN' || msg.provider !== provider) return undefined;
