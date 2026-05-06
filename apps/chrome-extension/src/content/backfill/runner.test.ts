@@ -98,8 +98,13 @@ describe('runBackfill', () => {
     expect(okEntries[0]!.title).toBe('Chat A');
     expect(okEntries[1]!.title).toBe('Chat B');
 
+    // `done` is now an INCREMENT (one per successful download), not an
+    // absolute. The background's applyBackfillPatch sums them. Both
+    // semantics work — the assertion was over-constrained on the old
+    // wire format.
     const dones = patches.map((p) => p.done).filter((v) => v != null);
-    expect(dones[dones.length - 1]).toBe(2);
+    expect(dones).toEqual([1, 1]);
+    expect(dones.reduce((a, b) => a + b, 0)).toBe(2);
   });
 
   it('logs "skipped" when no download is observed within the per-chat timeout', async () => {
@@ -348,61 +353,6 @@ describe('runBackfill', () => {
     const logs = patches.flatMap((p) => p.appendLog ?? []);
     expect(logs).toHaveLength(1);
     expect(logs[0]!.status).toBe('skipped');
-  });
-
-  describe('mode passthrough', () => {
-    it('passes ctx.mode="click" to navigate by default', async () => {
-      const links = [{ href: '/chat/a', title: 'A' }];
-      const navigate = vi.fn(async (link: { href: string }, ctx?: { mode: string }) => {
-        const id = link.href.split('/').pop()!;
-        dispatchCaptureDecision({
-          provider: 'claude',
-          conversationId: id,
-          action: 'downloaded',
-        });
-        // capture ctx as a side effect for the assertion below
-        (navigate as unknown as { lastCtx?: unknown }).lastCtx = ctx;
-      });
-      const adapter = makeAdapter({ links, navigate });
-
-      await runBackfill(adapter, {
-        minIntervalMs: 1,
-        maxIntervalMs: 2,
-        perChatTimeoutMs: 1000,
-        pollIntervalMs: 50,
-        reportPatch: async () => undefined,
-      });
-
-      expect(navigate).toHaveBeenCalledTimes(1);
-      const ctx = (navigate as unknown as { lastCtx?: { mode: string } }).lastCtx;
-      expect(ctx?.mode).toBe('click');
-    });
-
-    it('passes ctx.mode="fetch" when run option is set to "fetch"', async () => {
-      const links = [{ href: '/chat/a', title: 'A' }];
-      const navigate = vi.fn(async (link: { href: string }, ctx?: { mode: string }) => {
-        const id = link.href.split('/').pop()!;
-        dispatchCaptureDecision({
-          provider: 'claude',
-          conversationId: id,
-          action: 'downloaded',
-        });
-        (navigate as unknown as { lastCtx?: unknown }).lastCtx = ctx;
-      });
-      const adapter = makeAdapter({ links, navigate });
-
-      await runBackfill(adapter, {
-        minIntervalMs: 1,
-        maxIntervalMs: 2,
-        perChatTimeoutMs: 1000,
-        pollIntervalMs: 50,
-        mode: 'fetch',
-        reportPatch: async () => undefined,
-      });
-
-      const ctx = (navigate as unknown as { lastCtx?: { mode: string } }).lastCtx;
-      expect(ctx?.mode).toBe('fetch');
-    });
   });
 
   describe('stop latency', () => {

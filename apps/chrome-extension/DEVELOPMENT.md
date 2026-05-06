@@ -73,14 +73,10 @@ pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
 pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
   '{"action":"stop-backfill"}'
 
-# Wipe every cache key (convHashes / lastDownload / claudeApiHeaders /
-# claudeOrgId / todayGemini / backfillProgress)
+# Wipe every cache key (convHashes / lastDownload / todayGemini /
+# backfillProgress)
 pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
   '{"action":"reset-cache"}'
-
-# Switch capture mode
-pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
-  '{"action":"set-claude-mode","mode":"fetch"}'
 
 # Open a URL in a new tab (e.g. force a SPA fetch)
 pnpm --filter @weaver-octopus/chrome-extension dev:trigger \
@@ -148,8 +144,8 @@ Sequence that consistently led to root cause:
    up this way.
 3. **Dump the relevant chrome.storage.local keys.** `dev:trigger
    '{"action":"dump-storage","keys":[...]}'`. If a chat was processed
-   differently across runs, look at `todayGemini` / `convHashes` /
-   `claudeApiHeaders` and see what changed.
+   differently across runs, look at `todayGemini` / `convHashes` and see
+   what changed.
 4. **Add the smallest extra log that turns the bug from invisible to
    obvious.** Examples we added mid-session:
    - `slice composition` on the Gemini orchestrator's success path so we
@@ -190,7 +186,8 @@ appears within ~3s, the SW is asleep. Use one of the above.
 
 - **Backfill interval**: in the popup, the 间隔 inputs accept `0 ~ 0` —
   zero-pace backfill burns through chats as fast as the orchestrator can
-  process them. Useful when iterating on Claude fetch-mode logic.
+  process them. Useful for fast iteration in tests; not recommended in
+  real use (risk of rate limiting).
 - **Targeted tests**: `pnpm --filter @weaver-octopus/chrome-extension test path/to/file` —
   e.g. `... runner.test.ts` only re-runs that suite (~1s vs 5s for all).
 - **DevTools console filter**: paste `[weaver` into the filter input on
@@ -198,9 +195,8 @@ appears within ~3s, the SW is asleep. Use one of the above.
   has its own prefix:
   - `[weaver:intercept]` MAIN-world fetch patch
   - `[weaver:orch]` Claude intercept orchestrator
-  - `[weaver:claude-fetch]` Claude fetch orchestrator
   - `[weaver:gemini]` Gemini orchestrator
-  - `[weaver:claude-headers]`, `[weaver:claude-stale]`
+  - `[weaver:claude-stale]` cache invalidation on chat mutations
   - `[weaver:bg]` background coordinator
   - `[weaver:backfill]` backfill runner
   - `[weaver:dev-autoreload]` hot-reload poller

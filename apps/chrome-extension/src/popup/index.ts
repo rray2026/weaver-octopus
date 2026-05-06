@@ -3,7 +3,6 @@ import { startDevForwarder } from '@weaver-octopus/ext-dev-rpc/popup';
 import type {
   BackfillProgress,
   BackfillProviderProgress,
-  ClaudeCaptureMode,
   DateFilter,
   DateFilterType,
   LastDownload,
@@ -13,10 +12,10 @@ import type {
 const LAST_DOWNLOAD_KEY = 'lastDownload';
 const HASH_STORAGE_KEY = 'convHashes';
 const BACKFILL_PROGRESS_KEY = 'backfillProgress';
-const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
 const BACKFILL_INTERVAL_KEY = 'backfillIntervalSec';
-const DEFAULT_INTERVAL_MIN_SEC = 4;
-const DEFAULT_INTERVAL_MAX_SEC = 6;
+const LIVE_CAPTURE_KEY = 'liveCaptureEnabled';
+const DEFAULT_INTERVAL_MIN_SEC = 1;
+const DEFAULT_INTERVAL_MAX_SEC = 2;
 const INTERVAL_HARD_MIN_SEC = 0;
 const INTERVAL_HARD_MAX_SEC = 600;
 
@@ -108,9 +107,12 @@ async function init(): Promise<void> {
     }
   });
 
-  // ─── Claude capture mode (intercept | fetch) ─────────────────────────────
+  // ─── Live-capture toggle (off by default) ────────────────────────────────
 
-  await initClaudeMode();
+  const liveCaptureToggle = document.getElementById(
+    'live-capture-toggle',
+  ) as HTMLInputElement | null;
+  await initLiveCaptureToggle(liveCaptureToggle);
 
   // ─── Backfill interval inputs (per-chat random sleep range, in seconds) ──
 
@@ -202,6 +204,17 @@ async function init(): Promise<void> {
     renderLog(logEl, prog);
   }
 
+  async function initLiveCaptureToggle(
+    toggle: HTMLInputElement | null,
+  ): Promise<void> {
+    if (!toggle) return;
+    const stored = await chrome.storage.local.get(LIVE_CAPTURE_KEY);
+    toggle.checked = stored[LIVE_CAPTURE_KEY] === true;
+    toggle.addEventListener('change', async () => {
+      await chrome.storage.local.set({ [LIVE_CAPTURE_KEY]: toggle.checked });
+    });
+  }
+
   async function initIntervalInputs(
     minInput: HTMLInputElement | null,
     maxInput: HTMLInputElement | null,
@@ -226,23 +239,6 @@ async function init(): Promise<void> {
     maxInput.addEventListener('change', persist);
   }
 
-  async function initClaudeMode(): Promise<void> {
-    const radios = Array.from(
-      document.querySelectorAll<HTMLInputElement>('input[name="claude-mode"]'),
-    );
-    if (radios.length === 0) return;
-    const stored = await chrome.storage.local.get(CLAUDE_CAPTURE_MODE_KEY);
-    const current: ClaudeCaptureMode =
-      stored[CLAUDE_CAPTURE_MODE_KEY] === 'fetch' ? 'fetch' : 'intercept';
-    for (const r of radios) r.checked = r.value === current;
-    for (const r of radios) {
-      r.addEventListener('change', async () => {
-        if (!r.checked) return;
-        const next = r.value === 'fetch' ? 'fetch' : 'intercept';
-        await chrome.storage.local.set({ [CLAUDE_CAPTURE_MODE_KEY]: next });
-      });
-    }
-  }
 }
 
 function stateLabel(state: BackfillProgress['state'] | undefined): string {

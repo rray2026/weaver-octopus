@@ -39,26 +39,20 @@ export interface BackfillLink {
   title?: string;
 }
 
-/** How a backfill should reach each chat.
- *  - 'click': simulate a sidebar click; let the live orchestrator capture
- *    whatever fetch the SPA issues. The default — quiet, no extra requests.
- *  - 'fetch': bypass the sidebar entirely and call the conversation API
- *    directly (Claude only). Faster and cache-immune; one explicit request
- *    per chat. */
-export type BackfillMode = 'click' | 'fetch';
-
+/** Reserved for future per-iteration context (e.g. attempt number, abort
+ *  signal). Currently empty — adapters just navigate by clicking the live
+ *  sidebar anchor and let the live orchestrator capture the resulting fetch. */
 export interface BackfillNavigateContext {
-  mode: BackfillMode;
+  // Intentionally empty.
 }
 
 export interface BackfillProviderAdapter {
   provider: Provider;
   /** Reads the sidebar and returns chats to visit, in display order. */
   enumerate(): Promise<BackfillLink[]>;
-  /** Carries the runner to the chat so the orchestrator can capture it.
-   *  In 'click' mode this typically clicks the sidebar anchor; in 'fetch'
-   *  mode the adapter may issue its own request and return early once the
-   *  CAPTURE_DECISION event has fired. */
+  /** Carries the runner to the chat so the orchestrator can capture it —
+   *  typically by clicking the live sidebar anchor (or, as a fallback,
+   *  pushing a SPA history entry). */
   navigate(link: BackfillLink, ctx: BackfillNavigateContext): Promise<void>;
   /** Returns true if the lastDownload filename was produced by THIS provider's
    *  orchestrator. Used to avoid cross-provider stealing of "advance" signals. */
@@ -74,8 +68,6 @@ export interface BackfillRunOptions {
   minIntervalMs: number;
   maxIntervalMs: number;
   perChatTimeoutMs: number;
-  /** Click sidebar links (default) or call the conversation API directly. */
-  mode?: BackfillMode;
   /** How often to poll lastDownload for changes (ms). */
   pollIntervalMs?: number;
   /** Stop the rest of the batch after this many consecutive
@@ -103,7 +95,6 @@ export async function runBackfill(
   const tag = `${TAG_BASE}[${adapter.logTag}]`;
   const pollIntervalMs = opts.pollIntervalMs ?? 500;
   const stopAfterConsecutiveDateSkips = opts.stopAfterConsecutiveDateSkips ?? 5;
-  const mode: BackfillMode = opts.mode ?? 'click';
 
   console.log(tag, 'starting enumerate');
   const links = await adapter.enumerate();
@@ -152,7 +143,7 @@ export async function runBackfill(
         ? waitForDecision(adapter.provider, expectedConvId, opts.perChatTimeoutMs)
         : null;
 
-      await adapter.navigate(link, { mode });
+      await adapter.navigate(link, {});
 
       const result = await waitForCaptureSignal(
         adapter,
@@ -170,7 +161,11 @@ export async function runBackfill(
           title,
           href: link.href,
         };
-        await opts.reportPatch({ done: i + 1, appendLog: [outcome] });
+        // `done` uses the same INCREMENT semantics as `skipped`/`failed`;
+        // sending `i + 1` would over-count because the loop index includes
+        // earlier visits that were skipped, not downloaded. (Caused the
+        // "gemini done=2 but only 1 file" demo accounting bug.)
+        await opts.reportPatch({ done: 1, appendLog: [outcome] });
         consecutiveDateSkips = 0;
       } else {
         outcome = {

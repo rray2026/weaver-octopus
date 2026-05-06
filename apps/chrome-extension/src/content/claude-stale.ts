@@ -6,8 +6,7 @@
 // The hash dedup map (chrome.storage.local 'convHashes') would otherwise
 // suppress the next download because the OLD content's hash is still
 // stored. This module clears that entry as soon as a mutation is seen,
-// and exposes a hook for the fetch-mode orchestrator to schedule a
-// delayed re-fetch.
+// and exposes a hook subscribers can use to react to invalidations.
 
 const SOURCE = 'weaver-octopus:intercept';
 const HASH_STORAGE_KEY = 'convHashes';
@@ -48,8 +47,8 @@ async function onMessage(event: MessageEvent): Promise<void> {
   if (!data || data.source !== SOURCE || data.type !== 'STALE_CONVERSATION') return;
   const { conversationId } = data;
   console.log(TAG, 'invalidating cached hash', { conversationId });
-  // Persist invalidation (covers both intercept-mode and fetch-mode
-  // orchestrators since they read from the same storage key).
+  // Persist invalidation so the live orchestrator's next observed GET on
+  // this conversation produces a fresh download.
   try {
     const items = await chrome.storage.local.get(HASH_STORAGE_KEY);
     const stored = items[HASH_STORAGE_KEY] as Record<string, string> | undefined;
@@ -61,7 +60,8 @@ async function onMessage(event: MessageEvent): Promise<void> {
   } catch (err) {
     console.warn(TAG, 'failed to invalidate hash in storage', err);
   }
-  // Fan out to fetch-mode orchestrator (which can also schedule a refetch).
+  // Fan out to any subscribed listeners (currently none in production —
+  // the storage write above is the only required side effect).
   for (const cb of subscribers) {
     try {
       cb(conversationId);

@@ -178,7 +178,7 @@
   </head>
   <body>
     <h1>Weaver Octopus</h1>
-    <h2>Date filter (Claude only)</h2>
+    <h2>Date filter</h2>
     <div class="shortcuts" id="shortcuts">
       <button data-type="today">今天</button>
       <button data-type="yesterday">昨天</button>
@@ -198,17 +198,13 @@
     </div>
 
     <section class="backfill">
-      <h2>Claude 抓取模式</h2>
-      <div class="providers" id="claude-mode-row">
-        <label><input type="radio" name="claude-mode" value="intercept" checked /> 被动监听</label>
-        <label><input type="radio" name="claude-mode" value="fetch" /> 主动 fetch</label>
-      </div>
-      <p style="font-size:10px;color:#888;margin:4px 0 8px;">
-        切换后需刷新 claude.ai 标签页生效。批量回填也使用此模式（fetch 模式跳过点击直接拉取）。<br/>
-        <b>首次启用 fetch：</b>先在 intercept 模式下打开 claude.ai 任意一个会话刷新一次，让我们抓到一组 anthropic-* 身份头。<br/>
-        <b>诊断：</b>在 claude.ai 控制台跑
-        <code>chrome.storage.local.get('claudeApiHeaders').then(console.log)</code>
-        ，应该能看到 anthropic-* 字段。空就是没抓到。
+      <h2>实时监听下载</h2>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;">
+        <input type="checkbox" id="live-capture-toggle" />
+        浏览 Claude / Gemini 时自动下载今日新内容
+      </label>
+      <p style="font-size:10px;color:#888;margin:4px 0 12px;">
+        关闭后只有点击下方「批量回填」才会下载，平时浏览不写入文件。
       </p>
 
       <h2>批量回填</h2>

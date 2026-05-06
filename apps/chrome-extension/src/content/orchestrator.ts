@@ -1,7 +1,8 @@
 import { dispatchCaptureDecision } from './captureEvents.js';
 import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
-import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
+import { isLiveCaptureAllowed } from './live-capture-gate.js';
+import { messagesToMarkdown, sanitizeFilename } from './markdown.js';
 import type { ProviderParser } from './providers/types.js';
 
 const INTERCEPT_SOURCE = 'weaver-octopus:intercept';
@@ -109,6 +110,13 @@ export function startOrchestrator(parser: ProviderParser): () => void {
     const id = ++seq;
     const tag = `${TAG}#${id}`;
     console.log(tag, 'handle start', { conversationId: msg.conversationId });
+    // Gate: live capture is OFF by default. If the user hasn't opted in
+    // and no backfill is running, drop the event silently — keeps the
+    // orchestrator listeners cheap when the user just wants to browse.
+    if (!(await isLiveCaptureAllowed())) {
+      console.log(tag, 'skip: live capture disabled (no backfill in flight)');
+      return;
+    }
     await hydrationPromise;
     if (extensionInvalidated) {
       console.log(tag, 'skip: invalidated after hydration');
@@ -176,7 +184,11 @@ export function startOrchestrator(parser: ProviderParser): () => void {
       // Suffix the conversation id (first 8 hex chars) so two chats with the
       // same title on the same day don't overwrite each other.
       const idSuffix = msg.conversationId.slice(0, 8);
-      const filename = `weaver-octopus/${todayDateString()}/[claude] ${sanitizeFilename(conv.title)}-${idSuffix}.md`;
+      // Folder = the date the captured content was actually authored
+      // (newest in-range message's createdAt). So a "yesterday" filter
+      // run lands in ~/Downloads/.../<yesterday>/ not today's folder.
+      const folderDate = folderDateFromMessages(inRange);
+      const filename = `weaver-octopus/${folderDate}/[claude] ${sanitizeFilename(conv.title)}-${idSuffix}.md`;
       console.log(tag, 'sending DOWNLOAD_REQUEST', {
         filename,
         bytes: markdown.length,
@@ -232,4 +244,18 @@ export function startOrchestrator(parser: ProviderParser): () => void {
 function isExtensionInvalidated(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return msg.includes('Extension context invalidated');
+}
+
+/** Returns YYYY-MM-DD for the newest message's createdAt — that's the
+ *  folder the chat should land in. Falls back to today when the slice
+ *  is empty or carries no usable timestamps. Exported for tests. */
+export function folderDateFromMessages(
+  messages: Array<{ createdAt: number }>,
+): string {
+  let max = 0;
+  for (const m of messages) {
+    if (typeof m.createdAt === 'number' && m.createdAt > max) max = m.createdAt;
+  }
+  if (max === 0) return new Date().toLocaleDateString('en-CA');
+  return new Date(max).toLocaleDateString('en-CA');
 }

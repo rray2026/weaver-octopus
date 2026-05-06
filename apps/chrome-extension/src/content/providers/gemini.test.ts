@@ -8,6 +8,8 @@ import {
   isLastTurnIncomplete,
   scrapeTurns,
   sliceFingerprint,
+  stripModelWrapper,
+  stripUserWrapper,
   traceSliceMismatch,
   type GeminiTurn,
 } from './gemini.js';
@@ -331,6 +333,83 @@ describe('scrapeTurns', () => {
     `);
     const turns = scrapeTurns(root);
     expect(turns[0]).toEqual({ userText: 'padded q', modelText: 'padded a' });
+  });
+
+  it('strips the "你说" wrapper from rendered user text (real-world Gemini DOM)', () => {
+    const root = makeRoot(`
+      <div class="conversation-container">
+        <user-query>你说
+
+继续</user-query>
+        <model-response>显示思路
+Gemini 说
+
+The answer body</model-response>
+      </div>
+    `);
+    const turns = scrapeTurns(root);
+    expect(turns[0]).toEqual({ userText: '继续', modelText: 'The answer body' });
+  });
+
+  it('drops trailing ghost turns whose user-text is just the wrapper (fixes regression where the slice walker hit the empty turn first and stopped)', () => {
+    const root = makeRoot(`
+      <div class="conversation-container">
+        <user-query>real prompt</user-query>
+        <model-response>real answer</model-response>
+      </div>
+      <div class="conversation-container">
+        <user-query>你说</user-query>
+        <model-response></model-response>
+      </div>
+    `);
+    const turns = scrapeTurns(root);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toEqual({ userText: 'real prompt', modelText: 'real answer' });
+  });
+});
+
+describe('stripUserWrapper', () => {
+  it('removes "你说" prefix with multi-newline separator (real-world Gemini DOM)', () => {
+    expect(stripUserWrapper('你说\n\n继续')).toBe('继续');
+  });
+  it('removes "您说" + colon variant', () => {
+    expect(stripUserWrapper('您说：你好')).toBe('你好');
+  });
+  it('removes English "You said" with optional colon', () => {
+    expect(stripUserWrapper('You said: hello world')).toBe('hello world');
+    expect(stripUserWrapper('You said\nhello world')).toBe('hello world');
+  });
+  it('removes "User said/wrote/asked/message" variants', () => {
+    expect(stripUserWrapper('User wrote: ping')).toBe('ping');
+    expect(stripUserWrapper('user message:\nhi')).toBe('hi');
+  });
+  it('is a no-op when no wrapper present', () => {
+    expect(stripUserWrapper('plain prompt text')).toBe('plain prompt text');
+  });
+  it('is idempotent', () => {
+    const once = stripUserWrapper('你说\n\n继续');
+    expect(stripUserWrapper(once)).toBe(once);
+  });
+});
+
+describe('stripModelWrapper', () => {
+  it('removes the "显示思路" + "Gemini 说" stack (real-world Gemini DOM)', () => {
+    expect(stripModelWrapper('显示思路\nGemini 说\n\nThe answer body')).toBe('The answer body');
+  });
+  it('removes a lone "Gemini said" prefix', () => {
+    expect(stripModelWrapper('Gemini said\nThe answer')).toBe('The answer');
+  });
+  it('removes "Show thinking" alone', () => {
+    expect(stripModelWrapper('Show thinking\nThe answer body')).toBe('The answer body');
+  });
+  it('does not eat content that just happens to start with "Gemini" elsewhere', () => {
+    expect(stripModelWrapper('Gemini is a Google product, not a model')).toBe(
+      'Gemini is a Google product, not a model',
+    );
+  });
+  it('is idempotent', () => {
+    const once = stripModelWrapper('显示思路\nGemini 说\n\nbody');
+    expect(stripModelWrapper(once)).toBe(once);
   });
 });
 

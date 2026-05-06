@@ -15,19 +15,13 @@ interface ConversationMessage {
   body: unknown;
 }
 
-interface ApiHeadersMessage {
-  source: typeof INTERCEPT_SOURCE;
-  type: 'API_HEADERS';
-  headers: Record<string, string>;
-}
-
 interface StaleMessage {
   source: typeof INTERCEPT_SOURCE;
   type: 'STALE_CONVERSATION';
   conversationId: string;
 }
 
-type InterceptedMessage = ConversationMessage | ApiHeadersMessage | StaleMessage;
+type InterceptedMessage = ConversationMessage | StaleMessage;
 
 /** Returns a Response-like stub matching the surface intercept.ts uses. */
 function makeResponse(body: unknown, opts: { ok?: boolean; status?: number } = {}): Response {
@@ -227,71 +221,7 @@ describe('intercept (MAIN-world fetch patch)', () => {
     expect((m as ConversationMessage | undefined)?.conversationId).toBe(CONV_UUID);
   });
 
-  describe('API_HEADERS capture', () => {
-    function findHeaders(messages: InterceptedMessage[]): Record<string, string> | undefined {
-      const h = messages.find((m) => m.type === 'API_HEADERS') as
-        | ApiHeadersMessage
-        | undefined;
-      return h?.headers;
-    }
-
-    it('captures anthropic-* headers from a successful conversation fetch', async () => {
-      baseFetch.mockResolvedValueOnce(
-        makeResponse({ uuid: CONV_UUID, chat_messages: [] }),
-      );
-      await window.fetch(CONV_URL_PATH, {
-        headers: {
-          'anthropic-anonymous-id': 'anon-uuid',
-          'anthropic-client-platform': 'web_claude_ai',
-          'anthropic-device-id': 'device-uuid',
-          'content-length': '0', // not in the keep list — must be filtered out
-        },
-      });
-      await capture.waitFor(2);
-
-      const headers = findHeaders(capture.messages);
-      expect(headers).toBeDefined();
-      expect(headers!['anthropic-anonymous-id']).toBe('anon-uuid');
-      expect(headers!['anthropic-client-platform']).toBe('web_claude_ai');
-      expect(headers!['anthropic-device-id']).toBe('device-uuid');
-      // content-length must NOT leak through.
-      expect(headers!['content-length']).toBeUndefined();
-    });
-
-    it('captures headers from non-conversation /api/* calls (e.g. /api/organizations)', async () => {
-      baseFetch.mockResolvedValueOnce(makeResponse([{ uuid: 'org' }]));
-      await window.fetch(`/api/organizations`, {
-        headers: { 'anthropic-anonymous-id': 'anon' },
-      });
-      await capture.waitFor(1);
-
-      const headers = findHeaders(capture.messages);
-      expect(headers).toEqual({ 'anthropic-anonymous-id': 'anon' });
-    });
-
-    it('captures headers even when the response is non-ok (the headers are still valid)', async () => {
-      baseFetch.mockResolvedValueOnce(makeResponse({}, { ok: false, status: 403 }));
-      await window.fetch(`/api/organizations`, {
-        headers: { 'anthropic-anonymous-id': 'anon' },
-      });
-      await capture.waitFor(1);
-      // Capturing pre-response means we don't need a 2xx to populate the
-      // cache — useful when the user's first attempt is a fetch-mode call
-      // that itself 403s and we still want the headers from it.
-      expect(findHeaders(capture.messages)).toEqual({
-        'anthropic-anonymous-id': 'anon',
-      });
-    });
-
-    it('does not post API_HEADERS when no auth-flavoured headers are present', async () => {
-      baseFetch.mockResolvedValueOnce(makeResponse([]));
-      await window.fetch(`/api/organizations`, {
-        headers: { 'content-type': 'application/json' },
-      });
-      await new Promise((r) => setTimeout(r, 30));
-      expect(findHeaders(capture.messages)).toBeUndefined();
-    });
-
+  describe('STALE_CONVERSATION dispatch', () => {
     it('dispatches STALE_CONVERSATION on a POST to a chat URL (e.g. send message)', async () => {
       baseFetch.mockResolvedValueOnce(makeResponse({}));
       await window.fetch(`${CONV_URL_PATH}/completion`, {
@@ -329,17 +259,5 @@ describe('intercept (MAIN-world fetch patch)', () => {
       expect(stale).toBeUndefined();
     });
 
-    it('reads headers from a Request-style input as well as init', async () => {
-      baseFetch.mockResolvedValueOnce(makeResponse([]));
-      const req = {
-        url: '/api/organizations',
-        headers: new Headers({ 'anthropic-device-id': 'd1' }),
-      } as Request;
-      await window.fetch(req);
-      await capture.waitFor(1);
-
-      const headers = findHeaders(capture.messages);
-      expect(headers?.['anthropic-device-id']).toBe('d1');
-    });
   });
 });

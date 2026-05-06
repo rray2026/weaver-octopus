@@ -53,26 +53,76 @@ export function scrapeTurns(root: Document | Element = document): GeminiTurn[] {
       const u = userEls[i];
       const m = modelEls[i];
       out.push({
-        userText: u ? extractText(u) : '',
-        modelText: m ? extractText(m) : '',
+        userText: u ? stripUserWrapper(extractText(u)) : '',
+        modelText: m ? stripModelWrapper(extractText(m)) : '',
       });
     }
-    return out;
+    return dropGhostTurns(out);
   }
 
-  return containers.map((turn) => {
-    const userEl = turn.querySelector(USER_SELECTOR_INSIDE_TURN);
-    const modelEl = turn.querySelector(MODEL_SELECTOR_INSIDE_TURN);
-    return {
-      userText: userEl ? extractText(userEl) : '',
-      modelText: modelEl ? extractText(modelEl) : '',
-    };
-  });
+  return dropGhostTurns(
+    containers.map((turn) => {
+      const userEl = turn.querySelector(USER_SELECTOR_INSIDE_TURN);
+      const modelEl = turn.querySelector(MODEL_SELECTOR_INSIDE_TURN);
+      return {
+        userText: userEl ? stripUserWrapper(extractText(userEl)) : '',
+        modelText: modelEl ? stripModelWrapper(extractText(modelEl)) : '',
+      };
+    }),
+  );
+}
+
+/** Filters out rendering-artifact turns where the user-text is empty after
+ *  wrapper stripping. The Gemini DOM occasionally emits a trailing
+ *  user-query element that contains ONLY the accessibility wrapper text
+ *  ("你说" / "You said") with no actual prompt content — typically while
+ *  the page is still hydrating, or during streaming-response transitions.
+ *  Before wrapper-stripping landed, these survived as `userText: "你说"`
+ *  (non-empty), so the slice walker's `if (!userText) break;` guard never
+ *  fired. After stripping they collapse to `""`, which would terminate
+ *  the walk PREMATURELY and miss the real today prompts further back.
+ *  Drop them at the source so the walker's invariant ("every turn carries
+ *  a real prompt") holds. */
+function dropGhostTurns(turns: GeminiTurn[]): GeminiTurn[] {
+  return turns.filter((t) => t.userText.length > 0);
 }
 
 function extractText(el: Element): string {
   const innerText = (el as HTMLElement).innerText;
   return (innerText || el.textContent || '').trim();
+}
+
+// User side: Gemini wraps each prompt in an accessibility shell that
+// renders "You said" / "你说" before the actual content. innerText picks
+// that up. Strip both English and Chinese variants.
+const USER_WRAPPER_PREFIX_RE =
+  /^(?:你[说說]|您[说說]|you\s*said|user\s*(?:said|wrote|asked|message))\s*[:：]?\s*/i;
+
+// Model side: similar — the rendered DOM contains:
+//   "显示思路"  (the "Show thinking" toggle, when collapsed)
+//   "Gemini 说" / "Gemini said"  (TTS / a11y label before the answer)
+// We strip both regardless of order, repeating until no more match (the
+// two prefixes can appear together separated only by whitespace).
+const MODEL_WRAPPER_LINE_RE =
+  /^\s*(?:显示思路|show\s*thinking|gemini\s*(?:said|说|說))\s*[:：]?\s*\n?/i;
+
+/** Strips the user-query accessibility prefix ("你说" / "You said") from
+ *  rendered text. Exported for testing. */
+export function stripUserWrapper(text: string): string {
+  return (text || '').replace(USER_WRAPPER_PREFIX_RE, '').trim();
+}
+
+/** Strips Gemini's model-side UI artifacts ("显示思路", "Gemini 说") from
+ *  rendered text. Repeats until no prefix matches. Exported for testing. */
+export function stripModelWrapper(text: string): string {
+  let out = text || '';
+  // Cap iterations as a guard against unexpected DOM patterns.
+  for (let i = 0; i < 4; i++) {
+    const next = out.replace(MODEL_WRAPPER_LINE_RE, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out.trim();
 }
 
 /** True when the most recent turn either has no model reply yet or the model

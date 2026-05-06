@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startOrchestrator } from './orchestrator.js';
+import { folderDateFromMessages, startOrchestrator } from './orchestrator.js';
 import type { ConversationData, ProviderParser } from './providers/types.js';
 import { installChromeMock, uninstallChromeMock, type ChromeMock } from '../../test/chromeMock.js';
 
@@ -50,6 +50,10 @@ describe('orchestrator', () => {
 
   beforeEach(() => {
     mockChrome = installChromeMock();
+    // Live capture is OFF by default in production. These tests assert
+    // the orchestrator's processing pipeline, not the gate — pre-enable
+    // so events aren't dropped at the front door.
+    mockChrome.storage.local['liveCaptureEnabled'] = true;
     parser = {
       parseConversation: vi.fn((body) => body as ConversationData | null),
     };
@@ -254,5 +258,37 @@ describe('orchestrator', () => {
     await chrome.storage.local.remove(HASH_KEY);
     await flushMacro();
     expect(mockChrome.runtime.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('folderDateFromMessages', () => {
+  it('returns YYYY-MM-DD of the newest message', () => {
+    const may5 = new Date(2026, 4, 5, 14, 30).getTime();
+    const may4 = new Date(2026, 4, 4, 9, 0).getTime();
+    expect(folderDateFromMessages([{ createdAt: may4 }, { createdAt: may5 }])).toBe(
+      '2026-05-05',
+    );
+  });
+
+  it('handles single-message slices', () => {
+    const may5 = new Date(2026, 4, 5, 0, 0, 1).getTime();
+    expect(folderDateFromMessages([{ createdAt: may5 }])).toBe('2026-05-05');
+  });
+
+  it('falls back to today on empty input', () => {
+    const today = new Date().toLocaleDateString('en-CA');
+    expect(folderDateFromMessages([])).toBe(today);
+  });
+
+  it('falls back to today when every message has no usable timestamp', () => {
+    const today = new Date().toLocaleDateString('en-CA');
+    expect(
+      folderDateFromMessages([
+        // @ts-expect-error — exercising malformed input
+        { createdAt: undefined },
+        // @ts-expect-error
+        { createdAt: 'not a number' },
+      ]),
+    ).toBe(today);
   });
 });

@@ -3,8 +3,6 @@
 // Selectors are kept at the top so they're easy to update if claude.ai
 // reshuffles its sidebar markup.
 
-import { ClaudeParser } from '../providers/claude.js';
-import { processClaudeChatById } from '../claude-fetch-core.js';
 import type {
   BackfillLink,
   BackfillNavigateContext,
@@ -32,24 +30,10 @@ export const claudeBackfillAdapter: BackfillProviderAdapter = {
     return links.slice(0, MAX_CHATS);
   },
 
-  async navigate(link: BackfillLink, ctx: BackfillNavigateContext): Promise<void> {
-    if (ctx.mode === 'fetch') {
-      // Bypass the sidebar entirely. Issue the conversation API call directly
-      // so a stale SPA cache can't suppress capture. The processClaudeChatById
-      // core dispatches a CAPTURE_DECISION on completion — the runner picks
-      // up that event the same way it would for a click-driven capture.
-      const m = link.href.match(/\/chat\/([0-9a-fA-F-]{36})/);
-      if (!m) {
-        throw new Error(`fetch-mode: cannot extract chat id from "${link.href}"`);
-      }
-      await processClaudeChatById(m[1]!, new ClaudeParser(), {
-        logTag: `[weaver:backfill][claude][fetch] ${m[1]!.slice(0, 8)}`,
-      });
-      return;
-    }
-    // Click-mode: find the live anchor again — calling .click() on a stale
-    // element grabbed before this iteration risks the SPA having re-rendered
-    // the sidebar.
+  async navigate(link: BackfillLink, _ctx: BackfillNavigateContext): Promise<void> {
+    // Find the live anchor again — calling .click() on a stale element
+    // grabbed before this iteration risks the SPA having re-rendered the
+    // sidebar.
     const live = findLiveAnchor(link.href);
     if (live) {
       live.click();

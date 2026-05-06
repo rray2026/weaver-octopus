@@ -31,6 +31,9 @@ playwright-report
 *.swp
 *.swo
 
+# Claude Code session state (local-only)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -15,22 +15,25 @@
 // - messagesToMarkdown / sanitizeFilename / hashString.
 
 import { dispatchCaptureDecision } from './captureEvents.js';
+import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
+import { isLiveCaptureAllowed } from './live-capture-gate.js';
 import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
 import {
   cleanTitle,
   computeTodaySlice,
   getConversationIdFromUrl,
   isLastTurnIncomplete,
+  matchesPrompt,
   scrapeTurns,
   sliceFingerprint,
   traceSliceMismatch,
   type GeminiTurn,
 } from './providers/gemini.js';
-import type { ChatMessage, TodayGeminiPrompts } from '../types/index.js';
+import type { ChatMessage, GeminiActivityIndex } from '../types/index.js';
 
 const HASH_STORAGE_KEY = 'convHashes';
-const TODAY_STORAGE_KEY = 'todayGemini';
+const ACTIVITY_STORAGE_KEY = 'geminiActivity';
 const TAG = '[weaver:gemini]';
 const TRIGGER_DEBOUNCE_MS = 1500;
 const REFRESH_WAIT_MS = 4000;
@@ -145,6 +148,12 @@ export function startGeminiOrchestrator(
     const id = ++seq;
     const tag = `${TAG}#${id}`;
     try {
+      // Gate: live capture is OFF by default. Backfill flips an in-memory
+      // flag during its run so this still passes for batch downloads.
+      if (!(await isLiveCaptureAllowed())) {
+        console.log(tag, 'skip: live capture disabled (no backfill in flight)');
+        return;
+      }
       await hydrationPromise;
       if (extensionInvalidated) return;
 
@@ -193,7 +202,8 @@ export function startGeminiOrchestrator(
         return;
       }
 
-      // Resolve which turns are "today" via the myactivity prompt list.
+      // Resolve which turns fall in the user's date filter via the
+      // myactivity per-day prompt index.
       //
       // We deliberately do NOT use a per-tab "baseline" / "newSession" split
       // anymore. The original design assumed any turn beyond the baseline
@@ -202,51 +212,67 @@ export function startGeminiOrchestrator(
       // re-render the chat in stages, and an early MutationObserver tick
       // can pin the baseline to a partially-rendered (or empty) DOM. The
       // next tick then sees the full conversation and treats the entire
-      // history as "newSession" → we'd download the whole chat as today's.
+      // history as "newSession" → we'd download the whole chat.
       //
       // Strict rule: every turn must be vouched for by a matching
-      // myactivity entry. If myactivity is empty / stale we attempt one
-      // refresh; if still nothing, skip the chat entirely (don't guess).
-      let today = await readTodayPrompts();
-      if (!today || today.prompts.length === 0) {
+      // myactivity entry within the active range. If myactivity is empty
+      // / stale we attempt one refresh; if still nothing, skip the chat
+      // entirely (don't guess).
+      const filter = await loadFilter();
+      const range = computeRange(filter, new Date());
+      let activity = await readActivityIndex();
+      let inRange = activity
+        ? pickPromptsInRange(activity, range)
+        : { prompts: [], dates: [] };
+      if (inRange.prompts.length === 0) {
         await requestActivityRefresh(tag);
         await sleep(refreshWaitMs);
-        today = await readTodayPrompts();
+        activity = await readActivityIndex();
+        inRange = activity
+          ? pickPromptsInRange(activity, range)
+          : { prompts: [], dates: [] };
       }
-      if (!today || today.prompts.length === 0) {
-        console.log(tag, 'skip: no today prompts available from myactivity');
+      if (inRange.prompts.length === 0) {
+        console.log(tag, 'skip: no in-range prompts from myactivity', {
+          rangeLabel: range.label,
+        });
         dispatchCaptureDecision({
           provider: 'gemini',
           conversationId: convId,
           action: 'skipped:other',
-          reason: 'no today prompts available',
+          reason: `no prompts in ${range.label}`,
         });
         return;
       }
 
-      const slice = computeTodaySlice(turns, today.prompts);
+      const slice = computeTodaySlice(turns, inRange.prompts);
       console.log(tag, 'slice composition', {
         turns: turns.length,
-        todayPromptsLen: today.prompts.length,
+        rangeLabel: range.label,
+        rangePromptsLen: inRange.prompts.length,
         sliceLen: slice.length,
       });
       if (slice.length === 0) {
-        console.log(tag, 'skip: nothing in today slice', {
+        console.log(tag, 'skip: nothing in range slice', {
           turns: turns.length,
-          todayPrompts: today.prompts.length,
+          rangePrompts: inRange.prompts.length,
+          rangeLabel: range.label,
         });
-        // Detailed comparison so the user can see exactly which prompt
-        // mismatched (and how the normalised forms differ).
-        if (turns.length > 0 && today.prompts.length > 0) {
-          traceSliceMismatch(turns, today.prompts, (...args) =>
-            console.warn(tag, ...args),
+        // Detailed per-turn comparison — useful when the user expects
+        // in-range content and gets none. NOT useful during backfill walks
+        // where most chats are legitimately out-of-range. Use console.log
+        // (no DevTools stack trace) and gate on the dev build so production
+        // never even computes the trace strings.
+        if (__WEAVER_DEV__ && turns.length > 0 && inRange.prompts.length > 0) {
+          traceSliceMismatch(turns, inRange.prompts, (...args) =>
+            console.log(tag, ...args),
           );
         }
         dispatchCaptureDecision({
           provider: 'gemini',
           conversationId: convId,
           action: 'skipped:date',
-          reason: 'no turns in today slice',
+          reason: 'no turns in range slice',
         });
         return;
       }
@@ -271,7 +297,7 @@ export function startGeminiOrchestrator(
         messages,
         title,
         location.href,
-        today.date,
+        range.label,
         'gemini',
       );
 
@@ -300,7 +326,14 @@ export function startGeminiOrchestrator(
       }
 
       const idSuffix = convId.slice(0, 8);
-      const filename = `weaver-octopus/${todayDateString()}/[gemini] ${sanitizeFilename(title)}-${idSuffix}.md`;
+      // Folder = the date the chat's content was actually authored, so
+      // a "yesterday" backfill writes to ~/Downloads/.../<yesterday>/
+      // not to today's folder. Falls back to today only when we can't
+      // attribute any of the slice's prompts back to a myactivity day
+      // (e.g. partial DOM mid-render); the slice still goes to disk.
+      const chatDate = deriveChatDate(slice, inRange.prompts, inRange.dates);
+      const folderDate = chatDate ?? todayDateString();
+      const filename = `weaver-octopus/${folderDate}/[gemini] ${sanitizeFilename(title)}-${idSuffix}.md`;
       console.log(tag, 'sending DOWNLOAD_REQUEST', {
         filename,
         bytes: markdown.length,
@@ -340,14 +373,15 @@ export function startGeminiOrchestrator(
     }
   }
 
-  async function readTodayPrompts(): Promise<TodayGeminiPrompts | null> {
+  async function readActivityIndex(): Promise<GeminiActivityIndex | null> {
     try {
-      const items = await chrome.storage.local.get(TODAY_STORAGE_KEY);
-      const raw = items[TODAY_STORAGE_KEY] as TodayGeminiPrompts | undefined;
-      if (!raw || !Array.isArray(raw.prompts)) return null;
-      const today = todayDateString();
-      // Stale entries from before today are useless.
-      if (raw.date !== today) return null;
+      const items = await chrome.storage.local.get(ACTIVITY_STORAGE_KEY);
+      const raw = items[ACTIVITY_STORAGE_KEY] as GeminiActivityIndex | undefined;
+      if (!raw || !Array.isArray(raw.days)) return null;
+      // Snapshots scraped before today's date may legitimately still be
+      // valid for the user's selected range — we DON'T discard them just
+      // because scrapedAt < today (a refresh is also queued whenever
+      // activity is empty/stale relative to the requested range).
       return raw;
     } catch (err) {
       if (isExtensionInvalidated(err)) markInvalidated();
@@ -379,6 +413,71 @@ export function startGeminiOrchestrator(
     extensionInvalidated = true;
     console.warn(TAG, 'extension was reloaded — refresh this tab to resume');
   }
+}
+
+/** Flattens the per-day myactivity index into a parallel array of
+ *  `prompts` + `dates` filtered by the date filter's [start, end) ms range.
+ *  The two arrays line up by index — `dates[i]` is the day on which
+ *  `prompts[i]` was logged. Order is preserved (newest day first, prompts
+ *  within a day newest-first) so the slice matcher's greedy-from-tail
+ *  walk still works. Exported for tests. */
+export function pickPromptsInRange(
+  index: GeminiActivityIndex,
+  range: { start: number; end: number },
+): { prompts: string[]; dates: string[] } {
+  const prompts: string[] = [];
+  const dates: string[] = [];
+  for (const day of index.days) {
+    const ts = parseLocalDateMs(day.date);
+    if (ts == null) continue;
+    if (ts >= range.start && ts < range.end) {
+      for (const p of day.prompts) {
+        prompts.push(p);
+        dates.push(day.date);
+      }
+    }
+  }
+  return { prompts, dates };
+}
+
+/** Given a slice of chat turns (newest-last) and the prompt+date arrays
+ *  produced by `pickPromptsInRange`, returns the most-recent date among
+ *  the prompts that matched the slice's user-turns. Used to put a chat
+ *  with yesterday's content in yesterday's `~/Downloads/.../<date>/`
+ *  folder instead of today's. Exported for tests.
+ *
+ *  Walks newest-turn first, claim-once per prompt index, mirroring the
+ *  matcher in `computeTodaySlice` so we attribute exactly one prompt
+ *  to each turn. Returns null when nothing matches (caller should fall
+ *  back to today's date). */
+export function deriveChatDate(
+  slice: GeminiTurn[],
+  prompts: string[],
+  dates: string[],
+): string | null {
+  if (slice.length === 0 || prompts.length === 0) return null;
+  let max: string | null = null;
+  const claimed = new Set<number>();
+  for (let i = slice.length - 1; i >= 0; i--) {
+    const userText = slice[i]!.userText;
+    if (!userText) continue;
+    for (let j = 0; j < prompts.length; j++) {
+      if (claimed.has(j)) continue;
+      if (matchesPrompt(userText, prompts[j]!)) {
+        claimed.add(j);
+        const d = dates[j]!;
+        if (!max || d > max) max = d;
+        break;
+      }
+    }
+  }
+  return max;
+}
+
+function parseLocalDateMs(yyyymmdd: string): number | null {
+  const m = yyyymmdd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
 }
 
 function turnsToMessages(turns: GeminiTurn[]): ChatMessage[] {

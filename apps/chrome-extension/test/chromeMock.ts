@@ -26,6 +26,11 @@ export type DownloadChangeListener = (delta: {
 
 export type RuntimeInstalledListener = (details: { reason: string }) => void;
 
+export type TabsRemovedListener = (
+  tabId: number,
+  removeInfo: { windowId: number; isWindowClosing: boolean },
+) => void;
+
 interface MockManifest {
   host_permissions?: string[];
   [key: string]: unknown;
@@ -50,6 +55,12 @@ export interface ChromeMock {
     query: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     reload: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    get: ReturnType<typeof vi.fn>;
+    removedListeners: Set<TabsRemovedListener>;
+  };
+  storageSession: {
+    data: Record<string, unknown>;
   };
 }
 
@@ -64,10 +75,12 @@ const DEFAULT_MANIFEST: MockManifest = {
 
 export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
   const storageData: Record<string, unknown> = {};
+  const sessionData: Record<string, unknown> = {};
   const storageListeners = new Set<StorageChangeListener>();
   const messageListeners = new Set<RuntimeMessageListener>();
   const installedListeners = new Set<RuntimeInstalledListener>();
   const downloadChangeListeners = new Set<DownloadChangeListener>();
+  const tabsRemovedListeners = new Set<TabsRemovedListener>();
   const manifest: MockManifest = options.manifest ?? DEFAULT_MANIFEST;
 
   const fireStorageChanges = (changes: Record<string, StorageChange>) => {
@@ -106,6 +119,24 @@ export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
           if (Object.keys(changes).length > 0) fireStorageChanges(changes);
         },
       },
+      session: {
+        async get(key?: string | string[] | null) {
+          if (key == null) return { ...sessionData };
+          if (typeof key === 'string') {
+            return key in sessionData ? { [key]: sessionData[key] } : {};
+          }
+          const out: Record<string, unknown> = {};
+          for (const k of key) if (k in sessionData) out[k] = sessionData[k];
+          return out;
+        },
+        async set(items: Record<string, unknown>) {
+          for (const [k, v] of Object.entries(items)) sessionData[k] = v;
+        },
+        async remove(keys: string | string[]) {
+          const arr = typeof keys === 'string' ? [keys] : keys;
+          for (const k of arr) delete sessionData[k];
+        },
+      },
       onChanged: {
         addListener: (cb: StorageChangeListener) => storageListeners.add(cb),
         removeListener: (cb: StorageChangeListener) => storageListeners.delete(cb),
@@ -138,6 +169,16 @@ export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
         active: info.active ?? false,
       })),
       reload: vi.fn(async (_tabId: number) => undefined),
+      remove: vi.fn(async (_tabIds: number | number[]) => undefined),
+      get: vi.fn(async (_tabId: number) => {
+        // Default: pretend the tab no longer exists. Tests that need a live
+        // tab should override this on the returned mock surface.
+        throw new Error('No tab with id (mock default)');
+      }),
+      onRemoved: {
+        addListener: (cb: TabsRemovedListener) => tabsRemovedListeners.add(cb),
+        removeListener: (cb: TabsRemovedListener) => tabsRemovedListeners.delete(cb),
+      },
     },
   };
 
@@ -160,7 +201,11 @@ export function installChromeMock(options: ChromeMockOptions = {}): ChromeMock {
       query: chromeStub.tabs.query,
       create: chromeStub.tabs.create,
       reload: chromeStub.tabs.reload,
+      remove: chromeStub.tabs.remove,
+      get: chromeStub.tabs.get,
+      removedListeners: tabsRemovedListeners,
     },
+    storageSession: { data: sessionData },
   };
 }
 

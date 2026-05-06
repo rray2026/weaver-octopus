@@ -30,10 +30,7 @@ const POPUP_DOM = `
   <span id="cache-count"></span>
   <button id="reset-btn" type="button">Reset cache</button>
 
-  <div id="claude-mode-row">
-    <label><input type="radio" name="claude-mode" value="intercept" /> 被动监听</label>
-    <label><input type="radio" name="claude-mode" value="fetch" /> 主动 fetch</label>
-  </div>
+  <input type="checkbox" id="live-capture-toggle" />
 
   <input type="number" id="interval-min" />
   <input type="number" id="interval-max" />
@@ -207,12 +204,12 @@ describe('popup', () => {
   });
 
   describe('Backfill interval inputs', () => {
-    it('seeds the inputs with defaults (4..6s) when nothing is stored', async () => {
+    it('seeds the inputs with defaults (1..2s) when nothing is stored', async () => {
       await loadPopup();
       const min = document.getElementById('interval-min') as HTMLInputElement;
       const max = document.getElementById('interval-max') as HTMLInputElement;
-      expect(min.value).toBe('4');
-      expect(max.value).toBe('6');
+      expect(min.value).toBe('1');
+      expect(max.value).toBe('2');
     });
 
     it('reflects a previously stored interval', async () => {
@@ -279,49 +276,38 @@ describe('popup', () => {
     });
   });
 
-  describe('Claude capture mode toggle', () => {
-    it('preselects "intercept" by default when no preference is stored', async () => {
+  describe('live-capture toggle', () => {
+    it('starts unchecked when no preference is stored (default off)', async () => {
       await loadPopup();
-      const intercept = document.querySelector<HTMLInputElement>(
-        'input[name="claude-mode"][value="intercept"]',
-      )!;
-      const fetchRadio = document.querySelector<HTMLInputElement>(
-        'input[name="claude-mode"][value="fetch"]',
-      )!;
-      expect(intercept.checked).toBe(true);
-      expect(fetchRadio.checked).toBe(false);
+      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
+      expect(toggle.checked).toBe(false);
     });
 
-    it('reflects the previously stored mode on open', async () => {
-      mock.storage.local['claudeCaptureMode'] = 'fetch';
+    it('reflects the previously stored value', async () => {
+      mock.storage.local['liveCaptureEnabled'] = true;
       await loadPopup();
-      const fetchRadio = document.querySelector<HTMLInputElement>(
-        'input[name="claude-mode"][value="fetch"]',
-      )!;
-      expect(fetchRadio.checked).toBe(true);
+      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
+      expect(toggle.checked).toBe(true);
     });
 
-    it('persists the new mode to chrome.storage.local on radio change', async () => {
+    it('persists to chrome.storage.local on change', async () => {
       await loadPopup();
-      const fetchRadio = document.querySelector<HTMLInputElement>(
-        'input[name="claude-mode"][value="fetch"]',
-      )!;
-      fetchRadio.checked = true;
-      fetchRadio.dispatchEvent(new Event('change'));
+      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event('change'));
       await flushAsync();
-      expect(mock.storage.local['claudeCaptureMode']).toBe('fetch');
+      expect(mock.storage.local['liveCaptureEnabled']).toBe(true);
     });
 
-    it('round-trips back to "intercept" when the user re-selects it', async () => {
-      mock.storage.local['claudeCaptureMode'] = 'fetch';
+    it('round-trips back to false on uncheck', async () => {
+      mock.storage.local['liveCaptureEnabled'] = true;
       await loadPopup();
-      const intercept = document.querySelector<HTMLInputElement>(
-        'input[name="claude-mode"][value="intercept"]',
-      )!;
-      intercept.checked = true;
-      intercept.dispatchEvent(new Event('change'));
+      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
+      toggle.checked = false;
+      toggle.dispatchEvent(new Event('change'));
       await flushAsync();
-      expect(mock.storage.local['claudeCaptureMode']).toBe('intercept');
+      expect(mock.storage.local['liveCaptureEnabled']).toBe(false);
     });
   });
+
 });

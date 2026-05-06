@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import {
+  collectActivityByDate,
   collectTodayPrompts,
   extractPromptFromItem,
   findTodayHeader,
   isDateHeader,
+  parseDateHeader,
 } from './scraper.js';
 
 function makeRoot(html: string): HTMLElement {
@@ -163,5 +165,123 @@ describe('collectTodayPrompts', () => {
       <c-wiz><div>Prompt old</div></c-wiz>
     `);
     expect(collectTodayPrompts(document)).toEqual(['hello world', 'bye']);
+  });
+});
+
+describe('parseDateHeader', () => {
+  // Pin "now" so year-wrap logic is deterministic.
+  const NOW = new Date(2026, 4, 6); // 2026-05-06 local
+
+  it('resolves 今天 / Today to today', () => {
+    expect(parseDateHeader('今天', NOW)).toBe('2026-05-06');
+    expect(parseDateHeader('Today', NOW)).toBe('2026-05-06');
+    expect(parseDateHeader('今日', NOW)).toBe('2026-05-06');
+  });
+
+  it('resolves 昨天 / Yesterday to yesterday', () => {
+    expect(parseDateHeader('昨天', NOW)).toBe('2026-05-05');
+    expect(parseDateHeader('Yesterday', NOW)).toBe('2026-05-05');
+  });
+
+  it('parses Chinese full-date "YYYY年M月D日"', () => {
+    expect(parseDateHeader('2024年12月25日', NOW)).toBe('2024-12-25');
+    expect(parseDateHeader('2025年1月1日', NOW)).toBe('2025-01-01');
+  });
+
+  it('parses Chinese "M月D日" with year-wrap (most-recent <= today)', () => {
+    // April → April 2026 (earlier this year)
+    expect(parseDateHeader('4月15日', NOW)).toBe('2026-04-15');
+    // December → December 2025 (would be in the future this year)
+    expect(parseDateHeader('12月25日', NOW)).toBe('2025-12-25');
+  });
+
+  it('parses numeric "M/D/YYYY" and "M/D/YY"', () => {
+    expect(parseDateHeader('1/15/2024', NOW)).toBe('2024-01-15');
+    expect(parseDateHeader('12/25/24', NOW)).toBe('2024-12-25');
+  });
+
+  it('parses numeric "M/D" with year-wrap', () => {
+    expect(parseDateHeader('4/15', NOW)).toBe('2026-04-15');
+    expect(parseDateHeader('12/25', NOW)).toBe('2025-12-25');
+  });
+
+  it('returns null for unrecognised labels', () => {
+    expect(parseDateHeader('hello', NOW)).toBe(null);
+    expect(parseDateHeader('', NOW)).toBe(null);
+    expect(parseDateHeader('   ', NOW)).toBe(null);
+    expect(parseDateHeader(null, NOW)).toBe(null);
+    expect(parseDateHeader(undefined, NOW)).toBe(null);
+  });
+});
+
+describe('collectActivityByDate', () => {
+  const NOW = new Date(2026, 4, 6); // 2026-05-06
+
+  it('walks all date sections and bins prompts by date', () => {
+    makeRoot(`
+      <div>今天</div>
+      <c-wiz><div>10:20\n提示 today-1</div></c-wiz>
+      <c-wiz><div>10:25\n提示 today-2</div></c-wiz>
+      <div>昨天</div>
+      <c-wiz><div>提示 yesterday-1</div></c-wiz>
+      <div>4月29日</div>
+      <c-wiz><div>提示 last-week</div></c-wiz>
+      <c-wiz><div>提示 last-week-2</div></c-wiz>
+    `);
+    const idx = collectActivityByDate(document, NOW);
+    expect(idx.days).toEqual([
+      { date: '2026-05-06', prompts: ['today-1', 'today-2'] },
+      { date: '2026-05-05', prompts: ['yesterday-1'] },
+      { date: '2026-04-29', prompts: ['last-week', 'last-week-2'] },
+    ]);
+    expect(idx.scrapedAt).toBe(NOW.toISOString());
+  });
+
+  it('treats only recognised date-headers as section boundaries', () => {
+    // An unrecognised div BETWEEN two date sections doesn't introduce its
+    // own bucket; the items after it roll into the preceding section
+    // (today). Better to over-include than to silently drop data when
+    // myactivity ships a new header format we don't recognise yet.
+    makeRoot(`
+      <div>今天</div>
+      <c-wiz><div>提示 today-1</div></c-wiz>
+      <div>未识别的标题</div>
+      <c-wiz><div>提示 today-orphan</div></c-wiz>
+      <div>昨天</div>
+      <c-wiz><div>提示 yesterday-1</div></c-wiz>
+    `);
+    const idx = collectActivityByDate(document, NOW);
+    expect(idx.days).toEqual([
+      { date: '2026-05-06', prompts: ['today-1', 'today-orphan'] },
+      { date: '2026-05-05', prompts: ['yesterday-1'] },
+    ]);
+  });
+
+  it('omits days that have a header but zero recognisable prompt items', () => {
+    makeRoot(`
+      <div>今天</div>
+      <c-wiz><div>some banner with no prefix</div></c-wiz>
+      <div>昨天</div>
+      <c-wiz><div>提示 yesterday-1</div></c-wiz>
+    `);
+    const idx = collectActivityByDate(document, NOW);
+    expect(idx.days).toEqual([{ date: '2026-05-05', prompts: ['yesterday-1'] }]);
+  });
+
+  it('handles English locale across multiple days', () => {
+    makeRoot(`
+      <div>Today</div>
+      <c-wiz><div>Prompt hello</div></c-wiz>
+      <div>Yesterday</div>
+      <c-wiz><div>Prompt: world</div></c-wiz>
+      <div>4/29</div>
+      <c-wiz><div>Prompt last week</div></c-wiz>
+    `);
+    const idx = collectActivityByDate(document, NOW);
+    expect(idx.days).toEqual([
+      { date: '2026-05-06', prompts: ['hello'] },
+      { date: '2026-05-05', prompts: ['world'] },
+      { date: '2026-04-29', prompts: ['last week'] },
+    ]);
   });
 });

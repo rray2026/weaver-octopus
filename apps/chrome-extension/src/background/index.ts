@@ -5,7 +5,6 @@ import type {
   BackfillProviderProgress,
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,
-  ClaudeCaptureMode,
   ContentToBackgroundMessage,
   LastDownload,
   Provider,
@@ -20,12 +19,18 @@ const MYACTIVITY_QUERY_PATTERN = 'https://myactivity.google.com/product/gemini*'
 // myactivity is heavyweight to load. Throttle reload requests so a hot
 // stream of Gemini DOM mutations doesn't thrash the activity tab.
 const MYACTIVITY_REFRESH_THROTTLE_MS = 30_000;
+// chrome.storage.session is per-browser-session and survives SW restarts.
+// We persist the myactivity tab id we created so a SW restart between two
+// REFRESH_ACTIVITY calls doesn't open a duplicate (the in-memory
+// lastActivityRefreshAt resets to 0 on restart, and chrome.tabs.query
+// misses tabs that haven't yet committed their pendingUrl).
+const MYACTIVITY_TAB_ID_KEY = 'myactivityTabId';
 const BACKFILL_TAB_GROUP_TITLE = 'Weaver Octopus Backfill';
 // chrome.tabGroups Color values — type alias is named differently across
 // @types/chrome versions, so we keep this as a plain string the API accepts.
 const BACKFILL_TAB_GROUP_COLOR = 'blue' as const;
-const BACKFILL_DEFAULT_MIN_INTERVAL_MS = 4_000;
-const BACKFILL_DEFAULT_MAX_INTERVAL_MS = 6_000;
+const BACKFILL_DEFAULT_MIN_INTERVAL_MS = 1_000;
+const BACKFILL_DEFAULT_MAX_INTERVAL_MS = 2_000;
 const BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS = 20_000;
 // Sidebar is date-sorted past the pinned section, so once 5 consecutive
 // chats fall outside the user's date range, the rest will too.
@@ -41,6 +46,27 @@ let lastActivityRefreshAt = 0;
 
 chrome.runtime.onInstalled.addListener((details) => {
   console.log(TAG, 'onInstalled', { reason: details.reason });
+  // One-time storage cleanup. Removes:
+  //  - claude-fetch-mode keys (abandoned: Claude's API still 403s when
+  //    requests are replayed even with the full anthropic-* header set);
+  //  - the legacy `todayGemini` key superseded by the multi-day
+  //    `geminiActivity` index. Old payload doesn't survive a refresh and
+  //    nothing reads it anymore, but keeping it around wastes storage.
+  void chrome.storage.local
+    .remove(['claudeApiHeaders', 'claudeCaptureMode', 'claudeOrgId', 'todayGemini'])
+    .catch(() => undefined);
+});
+
+// Drop the tracked myactivity tab id the moment its tab closes — Chrome
+// can recycle tab ids, so a stale value risks reloading the wrong tab.
+chrome.tabs.onRemoved.addListener((closedTabId) => {
+  void (async () => {
+    const tracked = await getTrackedActivityTabId();
+    if (tracked === closedTabId) {
+      await setTrackedActivityTabId(null);
+      console.log(TAG, 'cleared tracked myactivity tab on close', { tabId: closedTabId });
+    }
+  })();
 });
 
 // Dev-only: wire @weaver-octopus/ext-dev-rpc — forwarder + auto-reload +
@@ -69,20 +95,58 @@ if (__WEAVER_DEV__) {
         chrome.storage.local.remove([
           'convHashes',
           'lastDownload',
-          'claudeApiHeaders',
-          'claudeOrgId',
-          'todayGemini',
+          'geminiActivity',
+          'todayGemini', // legacy key — keep in the reset list for older installs
           BACKFILL_PROGRESS_KEY,
           BACKFILL_STOP_FLAG,
         ]),
-      'set-claude-mode': (cmd) => {
-        const mode = cmd['mode'];
-        if (mode !== 'intercept' && mode !== 'fetch') return { error: 'bad mode' };
-        return chrome.storage.local.set({ claudeCaptureMode: mode });
-      },
       'open': (cmd) =>
         chrome.tabs.create({ url: String(cmd['url']), active: true }),
       'reload': () => chrome.runtime.reload(),
+      // Dev: set the popup's date-filter from the CLI without opening
+      // the popup. Mirrors the shape `popup/index.ts` writes.
+      'set-filter': (cmd) => {
+        const t = cmd['type'];
+        if (t !== 'today' && t !== 'yesterday' && t !== 'last7days' && t !== 'thisWeek' && t !== 'range') {
+          return { ok: false, error: `bad filter type: ${String(t)}` };
+        }
+        const filter: Record<string, unknown> = { type: t };
+        if (t === 'range') {
+          if (typeof cmd['start'] === 'string') filter['start'] = cmd['start'];
+          if (typeof cmd['end'] === 'string') filter['end'] = cmd['end'];
+        }
+        return chrome.storage.local.set({ dateFilter: filter });
+      },
+      // Dev: directly exercise refreshActivityTab (which carries the
+      // tracked-id fast path + duplicate-tab self-heal). Bypasses the
+      // normal sender check so we can drive it from the dev console.
+      'refresh-activity': async (cmd) => {
+        // The 30s throttle is fine for normal use but pointless when the
+        // dev operator is iterating; let `force` opt out.
+        if (cmd['force'] === true) __resetActivityThrottleForTests();
+        return refreshActivityTab('[dev]');
+      },
+      // Dev: ask the myactivity content script for a fresh scrape +
+      // header-candidate diagnostics. Useful when the persisted
+      // `geminiActivity` is empty and we don't know whether the page
+      // hasn't hydrated yet, the headers don't match our regexes, or
+      // the c-wiz items aren't where we expect.
+      'inspect-myactivity': async () => {
+        const tabs = await chrome.tabs.query({
+          url: 'https://myactivity.google.com/*',
+        });
+        if (tabs.length === 0) return { ok: false, error: 'no myactivity tab open' };
+        const tab = tabs[0]!;
+        if (tab.id == null) return { ok: false, error: 'myactivity tab has no id' };
+        try {
+          const ack = await chrome.tabs.sendMessage(tab.id, {
+            type: 'INSPECT_MYACTIVITY',
+          });
+          return { ok: true, tabId: tab.id, tabUrl: tab.url, snapshot: ack };
+        } catch (err) {
+          return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
+        }
+      },
       'dump-storage': async (cmd) => {
         const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : null;
         return chrome.storage.local.get(keys);
@@ -126,11 +190,6 @@ if (__WEAVER_DEV__) {
           if (key === 'convHashes' && value && typeof value === 'object') {
             const entries = Object.keys(value as Record<string, string>);
             summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
-          } else if (key === 'claudeApiHeaders' && value && typeof value === 'object') {
-            // Don't log header values (may include tokens) — just key names.
-            summary[key] = {
-              headerKeys: Object.keys(value as Record<string, string>).sort(),
-            };
           } else if (key === 'backfillProgress' && value && typeof value === 'object') {
             const prog = value as {
               state?: string;
@@ -212,6 +271,11 @@ type IncomingMessage =
 chrome.runtime.onMessage.addListener((message: IncomingMessage, sender, sendResponse) => {
   // Dev-only `__DEV_LOG__` relay is handled by `startDevServer` above
   // (which registers its own onMessage listener). Production stays clean.
+  // Chrome dispatches every onMessage to ALL registered listeners, so we
+  // must fast-pass package-owned types here — otherwise every dev-log
+  // tick triggers `unknown message type` noise + a useless `recv` log.
+  const rawType = (message as { type?: unknown } | null | undefined)?.type;
+  if (rawType === '__DEV_LOG__') return false;
 
   const id = ++seq;
   const tag = `${TAG}#${id}`;
@@ -393,17 +457,84 @@ async function refreshActivityTab(tag: string): Promise<RefreshActivityResult> {
   }
   lastActivityRefreshAt = now;
 
+  // 1) Trust a previously-tracked tab id first — it survives SW restarts
+  //    via storage.session and dodges the `chrome.tabs.query` race where a
+  //    just-created tab hasn't committed its URL yet.
+  const tracked = await getTrackedActivityTabId();
+  if (tracked != null) {
+    const live = await tabExists(tracked);
+    if (live) {
+      await chrome.tabs.reload(tracked);
+      console.log(tag, 'reloaded tracked myactivity tab', { tabId: tracked });
+      return { ok: true, action: 'reloaded', tabId: tracked };
+    }
+    // Stale — drop and fall through.
+    await setTrackedActivityTabId(null);
+  }
+
+  // 2) Fall back to a URL-based lookup for tabs the user opened manually
+  //    (or that we created before the tracking code shipped).
   const tabs = await chrome.tabs.query({ url: MYACTIVITY_QUERY_PATTERN });
   if (tabs.length === 0) {
     // Open in the background — don't steal the user's focus from Gemini.
     const created = await chrome.tabs.create({ url: MYACTIVITY_GEMINI_URL, active: false });
     console.log(tag, 'created myactivity tab', { tabId: created.id });
+    if (created.id != null) await setTrackedActivityTabId(created.id);
     return { ok: true, action: 'created', tabId: created.id };
   }
+
+  // Self-heal: if we somehow ended up with multiple myactivity tabs (e.g.
+  // an SW-restart race that pre-dated the tracking fix above), keep the
+  // first one and close the rest. Cheap, idempotent, observable in logs.
   const target = tabs[0]!;
-  if (target.id != null) await chrome.tabs.reload(target.id);
+  if (tabs.length > 1) {
+    const extras = tabs
+      .slice(1)
+      .map((t) => t.id)
+      .filter((id): id is number => typeof id === 'number');
+    if (extras.length > 0) {
+      try {
+        await chrome.tabs.remove(extras);
+        console.log(tag, 'closed duplicate myactivity tabs', { closed: extras, kept: target.id });
+      } catch (err) {
+        console.warn(tag, 'failed to close duplicate myactivity tabs', err);
+      }
+    }
+  }
+  if (target.id != null) {
+    await chrome.tabs.reload(target.id);
+    await setTrackedActivityTabId(target.id);
+  }
   console.log(tag, 'reloaded myactivity tab', { tabId: target.id });
   return { ok: true, action: 'reloaded', tabId: target.id };
+}
+
+async function getTrackedActivityTabId(): Promise<number | null> {
+  try {
+    const items = await chrome.storage.session.get(MYACTIVITY_TAB_ID_KEY);
+    const v = items[MYACTIVITY_TAB_ID_KEY];
+    return typeof v === 'number' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setTrackedActivityTabId(id: number | null): Promise<void> {
+  try {
+    if (id == null) await chrome.storage.session.remove(MYACTIVITY_TAB_ID_KEY);
+    else await chrome.storage.session.set({ [MYACTIVITY_TAB_ID_KEY]: id });
+  } catch {
+    // storage.session is unavailable in some test stubs — ignore.
+  }
+}
+
+async function tabExists(tabId: number): Promise<boolean> {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    return t != null;
+  } catch {
+    return false;
+  }
 }
 
 /** Test-only: lets the test reset the in-memory throttle clock between cases. */
@@ -441,11 +572,6 @@ async function startBackfill(
   };
   await writeProgress(fresh);
 
-  // Read the user's Claude capture-mode preference once. It controls both
-  // live capture (set by the content script at page load) and backfill —
-  // here we use it to pick the BACKFILL_RUN mode. Gemini is always click-
-  // based (no clean conversation API to call directly).
-  const claudeMode = await readClaudeCaptureMode();
   const interval = resolveInterval(overrides);
   console.log(tag, 'backfill interval', interval);
 
@@ -528,7 +654,6 @@ async function startBackfill(
       maxIntervalMs: interval.maxMs,
       perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
       stopAfterConsecutiveDateSkips: BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS,
-      mode: provider === 'claude' && claudeMode === 'fetch' ? 'fetch' : 'click',
     };
     try {
       const ack = await chrome.tabs.sendMessage(tabId, message);
@@ -683,8 +808,10 @@ async function ensureContentScriptReady(
 }
 
 /** Clamps the popup-supplied interval into the runner's accepted shape.
- *  Defaults preserve the previous behaviour (4–6s). 0 is allowed (no
- *  pacing, useful for fetch-mode where each request is cheap).
+ *  Defaults to 1–2s — fast enough that small backfills feel instant and
+ *  slow enough that click-driven captures usually settle before the next
+ *  navigation. 0 is allowed (no pacing — risky for click-driven backfill
+ *  but useful in tests).
  *
  *  Exported for unit tests. */
 export function resolveInterval(overrides: StartBackfillOverrides): {
@@ -708,16 +835,6 @@ export function resolveInterval(overrides: StartBackfillOverrides): {
   return { minMs, maxMs };
 }
 
-async function readClaudeCaptureMode(): Promise<ClaudeCaptureMode> {
-  try {
-    const items = await chrome.storage.local.get('claudeCaptureMode');
-    const v = items['claudeCaptureMode'];
-    return v === 'fetch' ? 'fetch' : 'intercept';
-  } catch {
-    return 'intercept';
-  }
-}
-
 function makeEmptyProviderProgress(): BackfillProviderProgress {
   return { total: 0, done: 0, failed: 0, skipped: 0, log: [] };
 }
@@ -737,12 +854,26 @@ async function writeProgress(prog: BackfillProgress): Promise<void> {
   await chrome.storage.local.set({ [BACKFILL_PROGRESS_KEY]: prog });
 }
 
+// Serialise the read-modify-write sequence. Without this, two
+// BACKFILL_PROGRESS messages arriving milliseconds apart both read
+// the same stale snapshot, apply their patch, and the second write
+// stomps the first. Symptom in real runs: provider `total` getting
+// reset to 0 after the runner's initial `{total: N}` patch races
+// with a near-simultaneous `{currentTitle: ...}` patch.
+let mutateChain: Promise<unknown> = Promise.resolve();
+
 async function mutateProgress(
   fn: (prev: BackfillProgress) => BackfillProgress,
 ): Promise<BackfillProgress> {
-  const prev = await readProgress();
-  const next = fn(prev);
-  await writeProgress(next);
+  const next = mutateChain.then(async () => {
+    const prev = await readProgress();
+    const out = fn(prev);
+    await writeProgress(out);
+    return out;
+  });
+  // Replace the chain with a tail that swallows errors so one rejection
+  // doesn't poison every subsequent mutateProgress call.
+  mutateChain = next.catch(() => undefined);
   return next;
 }
 
@@ -764,7 +895,10 @@ async function patchProvider(
     const merged: BackfillProviderProgress = {
       ...cur,
       total: patch.total ?? cur.total,
-      done: patch.done ?? cur.done,
+      // INCREMENT semantics match `failed`/`skipped` — runner now sends
+      // `{done: 1}` per success rather than the (loop-index-driven)
+      // absolute count.
+      done: cur.done + (patch.done ?? 0),
       failed: cur.failed + (patch.failed ?? 0),
       skipped: cur.skipped + (patch.skipped ?? 0),
       currentTitle:
@@ -797,4 +931,7 @@ function appendLog(
 export const __backfillInternals = {
   appendLog,
   makeEmptyProviderProgress,
+  patchProvider,
+  writeProgress,
+  readProgress,
 };

@@ -280,6 +280,62 @@ describe('background REFRESH_ACTIVITY', () => {
     expect(ack.ok).toBe(false);
     expect(mock.tabs.query).not.toHaveBeenCalled();
   });
+
+  it('reuses a tab id from chrome.storage.session even if tabs.query misses it (SW-restart race)', async () => {
+    // Simulate the post-restart state: tabId tracked in session storage,
+    // tab still alive, but tabs.query returns nothing (URL not committed).
+    mock.storageSession.data['myactivityTabId'] = 17;
+    mock.tabs.get.mockResolvedValueOnce({ id: 17, url: 'https://myactivity.google.com/product/gemini' });
+
+    const listener = getMessageListener(mock);
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(ack).toMatchObject({ ok: true, action: 'reloaded', tabId: 17 });
+    expect(mock.tabs.create).not.toHaveBeenCalled();
+    expect(mock.tabs.reload).toHaveBeenCalledWith(17);
+    // Tracked path skipped tabs.query entirely.
+    expect(mock.tabs.query).not.toHaveBeenCalled();
+  });
+
+  it('self-heals: closes extra myactivity tabs when query returns more than one', async () => {
+    mock.tabs.query.mockResolvedValueOnce([
+      { id: 11, url: 'https://myactivity.google.com/product/gemini' },
+      { id: 22, url: 'https://myactivity.google.com/product/gemini' },
+      { id: 33, url: 'https://myactivity.google.com/product/gemini' },
+    ]);
+    const listener = getMessageListener(mock);
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(ack).toMatchObject({ ok: true, action: 'reloaded', tabId: 11 });
+    expect(mock.tabs.remove).toHaveBeenCalledWith([22, 33]);
+    expect(mock.tabs.reload).toHaveBeenCalledWith(11);
+    expect(mock.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('drops the tracked id and falls back to query when the tracked tab is gone', async () => {
+    mock.storageSession.data['myactivityTabId'] = 17;
+    // tabs.get default rejects → treated as gone.
+    const listener = getMessageListener(mock);
+    const ack = await invokeListener(
+      listener,
+      { type: 'REFRESH_ACTIVITY' },
+      'https://gemini.google.com/app/abc',
+    );
+
+    expect(ack.ok).toBe(true);
+    expect(mock.tabs.query).toHaveBeenCalledTimes(1);
+    expect(mock.tabs.create).toHaveBeenCalledTimes(1);
+    // After fallback create, the new tab id is tracked.
+    expect(mock.storageSession.data['myactivityTabId']).toBe(99);
+  });
 });
 
 describe('background resolveInterval', () => {
@@ -296,8 +352,8 @@ describe('background resolveInterval', () => {
     uninstallChromeMock();
   });
 
-  it('falls back to defaults (4–6s) when overrides are missing', () => {
-    expect(resolveInterval({})).toEqual({ minMs: 4000, maxMs: 6000 });
+  it('falls back to defaults (1–2s) when overrides are missing', () => {
+    expect(resolveInterval({})).toEqual({ minMs: 1000, maxMs: 2000 });
   });
 
   it('converts seconds to ms', () => {
@@ -323,8 +379,8 @@ describe('background resolveInterval', () => {
 
   it('treats NaN as missing and falls back to defaults', () => {
     expect(resolveInterval({ intervalMinSec: NaN, intervalMaxSec: NaN })).toEqual({
-      minMs: 4000,
-      maxMs: 6000,
+      minMs: 1000,
+      maxMs: 2000,
     });
   });
 });
@@ -375,5 +431,67 @@ describe('background appendLog', () => {
     expect(result[result.length - 1]!.at).toBe(1004);
     // Oldest dropped
     expect(result[0]!.at).toBeGreaterThan(0);
+  });
+});
+
+describe('background patchProvider race serialisation', () => {
+  let internals: typeof import('./index.js').__backfillInternals;
+
+  beforeEach(async () => {
+    installChromeMock();
+    vi.resetModules();
+    const mod = await import('./index.js');
+    internals = mod.__backfillInternals;
+    // Seed a fresh-style progress object the way startBackfill does.
+    await internals.writeProgress({
+      state: 'running',
+      startedAt: Date.now(),
+      perProvider: {
+        claude: internals.makeEmptyProviderProgress(),
+        gemini: internals.makeEmptyProviderProgress(),
+      },
+    });
+  });
+
+  afterEach(() => {
+    uninstallChromeMock();
+  });
+
+  it('does not lose `total` when two patches fire concurrently (RMW race)', async () => {
+    // Repro of the production bug: the runner's `{total: 27}` patch
+    // races with a near-simultaneous `{currentTitle: ...}` patch.
+    // Without serialisation both reads see total=0 and the second
+    // write stomps the first, leaving total=0 in storage.
+    await Promise.all([
+      internals.patchProvider('claude', { total: 27 }),
+      internals.patchProvider('claude', { currentTitle: 'Mac mini' }),
+    ]);
+
+    const prog = await internals.readProgress();
+    expect(prog.perProvider.claude!.total).toBe(27);
+    expect(prog.perProvider.claude!.currentTitle).toBe('Mac mini');
+  });
+
+  it('correctly accumulates increments under concurrency', async () => {
+    // Three `done: 1` patches fired concurrently must sum to done=3.
+    await Promise.all([
+      internals.patchProvider('claude', { done: 1 }),
+      internals.patchProvider('claude', { done: 1 }),
+      internals.patchProvider('claude', { done: 1 }),
+    ]);
+
+    const prog = await internals.readProgress();
+    expect(prog.perProvider.claude!.done).toBe(3);
+  });
+
+  it('one rejection does not poison subsequent mutateProgress calls', async () => {
+    // patchProvider itself doesn't normally reject, but the chain's tail
+    // catches rejections defensively. Verify a later patch still applies.
+    await internals.patchProvider('claude', { total: 27 });
+    await internals.patchProvider('claude', { skipped: 1 });
+
+    const prog = await internals.readProgress();
+    expect(prog.perProvider.claude!.total).toBe(27);
+    expect(prog.perProvider.claude!.skipped).toBe(1);
   });
 });

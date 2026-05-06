@@ -1,16 +1,28 @@
 // @vitest-environment jsdom
 // @vitest-environment-options { "url": "https://gemini.google.com/app/abc12345-conv" }
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startGeminiOrchestrator } from './gemini-orchestrator.js';
+import {
+  deriveChatDate,
+  pickPromptsInRange,
+  startGeminiOrchestrator,
+} from './gemini-orchestrator.js';
 import {
   installChromeMock,
   uninstallChromeMock,
   type ChromeMock,
 } from '../../test/chromeMock.js';
-import type { TodayGeminiPrompts } from '../types/index.js';
+import type { GeminiActivityIndex } from '../types/index.js';
 
-const TODAY_KEY = 'todayGemini';
+const ACTIVITY_KEY = 'geminiActivity';
 const HASH_KEY = 'convHashes';
+
+/** Convenience: build a one-day activity index for `todayDateString()`. */
+function todayActivity(prompts: string[]): GeminiActivityIndex {
+  return {
+    scrapedAt: new Date().toISOString(),
+    days: [{ date: todayDateString(), prompts }],
+  };
+}
 
 function todayDateString(): string {
   return new Date().toLocaleDateString('en-CA');
@@ -42,6 +54,10 @@ describe('startGeminiOrchestrator', () => {
     mock = installChromeMock({
       manifest: { host_permissions: ['https://gemini.google.com/*'] },
     });
+    // Live capture is OFF by default in production. Pre-enable so the
+    // orchestrator pipeline runs in tests; the gate itself is covered by
+    // live-capture-gate.test.ts.
+    mock.storage.local['liveCaptureEnabled'] = true;
     document.body.innerHTML = '';
     document.title = '';
   });
@@ -59,12 +75,8 @@ describe('startGeminiOrchestrator', () => {
       { q: 'today A', a: 'reply A' },
       { q: 'today B', a: 'reply B' },
     ]);
-    const today: TodayGeminiPrompts = {
-      date: todayDateString(),
-      // newest-first as myactivity displays it
-      prompts: ['today B', 'today A'],
-    };
-    mock.storage.local[TODAY_KEY] = today;
+    // newest-first as myactivity displays it
+    mock.storage.local[ACTIVITY_KEY] = todayActivity(['today B', 'today A']);
 
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
 
@@ -110,10 +122,7 @@ describe('startGeminiOrchestrator', () => {
       'beforeend',
       '<button aria-label="Stop response">Stop</button>',
     );
-    mock.storage.local[TODAY_KEY] = {
-      date: todayDateString(),
-      prompts: ['today A'],
-    } satisfies TodayGeminiPrompts;
+    mock.storage.local[ACTIVITY_KEY] = todayActivity(['today A']);
 
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
 
@@ -126,7 +135,7 @@ describe('startGeminiOrchestrator', () => {
 
   it('requests REFRESH_ACTIVITY when no today prompts are available', async () => {
     setupConversationDom([{ q: 'history', a: 'reply' }]);
-    // no TODAY_KEY → null today prompts. The orchestrator must attempt one
+    // no ACTIVITY_KEY → null today prompts. The orchestrator must attempt one
     // refresh of myactivity; if the refresh still produces nothing, the
     // chat is skipped (no guesswork).
 
@@ -158,10 +167,7 @@ describe('startGeminiOrchestrator', () => {
     // counted it as today via the newSession fallback when myactivity
     // was empty. Now we verify only matching turns get downloaded.
     setupConversationDom([{ q: 'historical question from yesterday', a: 'a' }]);
-    mock.storage.local[TODAY_KEY] = {
-      date: todayDateString(),
-      prompts: ['some unrelated today prompt'],
-    } satisfies TodayGeminiPrompts;
+    mock.storage.local[ACTIVITY_KEY] = todayActivity(['some unrelated today prompt']);
 
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
 
@@ -178,7 +184,7 @@ describe('startGeminiOrchestrator', () => {
 
   it('skips a chat with action=skipped:other when myactivity returns no today prompts after refresh', async () => {
     setupConversationDom([{ q: 'something', a: 'reply' }]);
-    // No TODAY_KEY at all. Refresh attempt also won't populate it (mock
+    // No ACTIVITY_KEY at all. Refresh attempt also won't populate it (mock
     // chrome.tabs.create is a no-op as far as storage.local is concerned).
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
 
@@ -191,10 +197,7 @@ describe('startGeminiOrchestrator', () => {
 
   it('dedups identical content via the cross-tab convHashes hash', async () => {
     setupConversationDom([{ q: 'today A', a: 'reply A' }]);
-    mock.storage.local[TODAY_KEY] = {
-      date: todayDateString(),
-      prompts: ['today A'],
-    } satisfies TodayGeminiPrompts;
+    mock.storage.local[ACTIVITY_KEY] = todayActivity(['today A']);
 
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
     await vi.waitFor(
@@ -215,10 +218,7 @@ describe('startGeminiOrchestrator', () => {
 
   it('dispose() detaches MutationObserver and storage listener', async () => {
     setupConversationDom([{ q: 'today A', a: 'reply A' }]);
-    mock.storage.local[TODAY_KEY] = {
-      date: todayDateString(),
-      prompts: ['today A'],
-    } satisfies TodayGeminiPrompts;
+    mock.storage.local[ACTIVITY_KEY] = todayActivity(['today A']);
 
     const d = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
     await vi.waitFor(
@@ -235,5 +235,110 @@ describe('startGeminiOrchestrator', () => {
       (c) => (c[0] as { type: string }).type === 'DOWNLOAD_REQUEST',
     );
     expect(downloads).toHaveLength(0);
+  });
+});
+
+describe('pickPromptsInRange', () => {
+  function ms(ymd: string): number {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(y!, m! - 1, d!).getTime();
+  }
+  function range(startYmd: string, endExclusiveYmd: string): { start: number; end: number } {
+    return { start: ms(startYmd), end: ms(endExclusiveYmd) };
+  }
+
+  const idx: GeminiActivityIndex = {
+    scrapedAt: '2026-05-06T00:00:00Z',
+    days: [
+      { date: '2026-05-06', prompts: ['today-1', 'today-2'] },
+      { date: '2026-05-05', prompts: ['yesterday-1'] },
+      { date: '2026-04-29', prompts: ['last-week-1'] },
+      { date: '2026-04-15', prompts: ['april-1'] },
+    ],
+  };
+
+  it('returns just today\'s prompts for a today-only range', () => {
+    expect(pickPromptsInRange(idx, range('2026-05-06', '2026-05-07'))).toEqual({
+      prompts: ['today-1', 'today-2'],
+      dates: ['2026-05-06', '2026-05-06'],
+    });
+  });
+
+  it('returns last-7-days flattened, preserving newest-first order, with parallel dates', () => {
+    expect(pickPromptsInRange(idx, range('2026-04-30', '2026-05-07'))).toEqual({
+      prompts: ['today-1', 'today-2', 'yesterday-1'],
+      dates: ['2026-05-06', '2026-05-06', '2026-05-05'],
+    });
+  });
+
+  it('returns empty when the range falls outside any captured day', () => {
+    expect(pickPromptsInRange(idx, range('2025-01-01', '2025-01-08'))).toEqual({
+      prompts: [],
+      dates: [],
+    });
+  });
+
+  it('treats `end` as exclusive (boundary day on `end` is NOT included)', () => {
+    // [2026-05-05, 2026-05-06) → only yesterday, NOT today.
+    expect(pickPromptsInRange(idx, range('2026-05-05', '2026-05-06'))).toEqual({
+      prompts: ['yesterday-1'],
+      dates: ['2026-05-05'],
+    });
+  });
+
+  it('skips days whose date string is malformed', () => {
+    const broken: GeminiActivityIndex = {
+      scrapedAt: '',
+      days: [
+        { date: 'not-a-date', prompts: ['junk'] },
+        { date: '2026-05-06', prompts: ['ok'] },
+      ],
+    };
+    expect(pickPromptsInRange(broken, range('2026-05-01', '2026-05-31'))).toEqual({
+      prompts: ['ok'],
+      dates: ['2026-05-06'],
+    });
+  });
+});
+
+describe('deriveChatDate', () => {
+  it('returns the most-recent date among matched prompts', () => {
+    const slice = [
+      { userText: 'old prompt', modelText: '' },
+      { userText: 'newer prompt', modelText: '' },
+    ];
+    const prompts = ['old prompt', 'newer prompt'];
+    const dates = ['2026-04-29', '2026-05-05'];
+    expect(deriveChatDate(slice, prompts, dates)).toBe('2026-05-05');
+  });
+
+  it('claims-once: same prompt only attributed to one slice turn', () => {
+    const slice = [
+      { userText: 'shared', modelText: '' },
+      { userText: 'shared', modelText: '' },
+    ];
+    const prompts = ['shared', 'shared'];
+    const dates = ['2026-05-04', '2026-05-05'];
+    // Walks newest→oldest: turn[1] claims dates[0], turn[0] claims dates[1].
+    // (The matcher claim-once order isn't important here — what matters
+    // is that BOTH dates contribute to the max.) Expected max: 2026-05-05.
+    expect(deriveChatDate(slice, prompts, dates)).toBe('2026-05-05');
+  });
+
+  it('returns null when nothing matches', () => {
+    const slice = [{ userText: 'foo', modelText: '' }];
+    expect(deriveChatDate(slice, ['bar'], ['2026-05-05'])).toBe(null);
+  });
+
+  it('returns null on empty inputs', () => {
+    expect(deriveChatDate([], ['p'], ['2026-05-05'])).toBe(null);
+    expect(deriveChatDate([{ userText: 'p', modelText: '' }], [], [])).toBe(null);
+  });
+
+  it('matches via TRUNCATED-PREFIX (myactivity-truncates-with-…)', () => {
+    const slice = [{ userText: 'this is a really long prompt that goes on forever', modelText: '' }];
+    const prompts = ['this is a really lo…'];
+    const dates = ['2026-05-05'];
+    expect(deriveChatDate(slice, prompts, dates)).toBe('2026-05-05');
   });
 });
