@@ -79,6 +79,10 @@ if (__WEAVER_DEV__) {
     setClaudeMode: (mode) => chrome.storage.local.set({ claudeCaptureMode: mode }),
     openTab: (url) => chrome.tabs.create({ url, active: true }),
     reloadExtension: () => chrome.runtime.reload(),
+    dumpStorage: async (keys) => {
+      const items = await chrome.storage.local.get(keys ?? null);
+      return items;
+    },
   });
 }
 

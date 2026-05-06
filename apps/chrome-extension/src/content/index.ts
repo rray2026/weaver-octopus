@@ -7,11 +7,7 @@ import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ClaudeParser } from './providers/claude.js';
-// NOTE: content scripts are classic scripts that can't load Rollup chunks.
-// Importing the dev log-forwarder here would force a shared chunk and
-// break content.js loading. Content-script logs stay visible in the page's
-// own DevTools console — that's enough for debugging. The dev-log file
-// only mirrors background SW + popup output.
+import { startContentDevLogForwarder } from './dev-log-content.js';
 import type {
   BackfillProviderProgressPatch,
   BackgroundToContentMessage,
@@ -25,6 +21,8 @@ const CLAUDE_CAPTURE_MODE_KEY = 'claudeCaptureMode';
 // One content.js bundle is shared between claude.ai and gemini.google.com
 // (single Vite entry → single Rollup chunk → no shared-module split, which
 // would otherwise break content-script loading). Branch on hostname here.
+if (__WEAVER_DEV__) startContentDevLogForwarder(`content:${location.hostname}`);
+
 try {
   const host = location.hostname;
   if (host === 'claude.ai' || host.endsWith('.claude.ai')) {

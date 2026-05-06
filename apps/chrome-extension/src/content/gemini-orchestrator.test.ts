@@ -124,9 +124,11 @@ describe('startGeminiOrchestrator', () => {
     expect(downloadCalls).toHaveLength(0);
   });
 
-  it('requests REFRESH_ACTIVITY when no today prompts are available and there is no newSession', async () => {
+  it('requests REFRESH_ACTIVITY when no today prompts are available', async () => {
     setupConversationDom([{ q: 'history', a: 'reply' }]);
-    // no TODAY_KEY → null today prompts. Baseline = 1, so newSession is empty.
+    // no TODAY_KEY → null today prompts. The orchestrator must attempt one
+    // refresh of myactivity; if the refresh still produces nothing, the
+    // chat is skipped (no guesswork).
 
     dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
 
@@ -139,6 +141,52 @@ describe('startGeminiOrchestrator', () => {
       },
       { timeout: 1000 },
     );
+  });
+
+  it('does NOT download a chat just because turns rendered after the orchestrator first observed it', async () => {
+    // Regression: when backfill clicks a sidebar link the SPA used to
+    // render the chat in stages. An early MutationObserver tick saw a
+    // partially-rendered DOM and the orchestrator pinned a "baseline"
+    // there; the next tick saw the full conversation and treated every
+    // newly-rendered turn as "newSession" (presumed today). The result
+    // was downloading the entire historical conversation as today's
+    // chat. Fix: the slice is decided exclusively by myactivity matching
+    // — no baseline / newSession fallback.
+
+    // Set up a chat with a single turn that doesn't match today's
+    // myactivity. With the old code the orchestrator might still have
+    // counted it as today via the newSession fallback when myactivity
+    // was empty. Now we verify only matching turns get downloaded.
+    setupConversationDom([{ q: 'historical question from yesterday', a: 'a' }]);
+    mock.storage.local[TODAY_KEY] = {
+      date: todayDateString(),
+      prompts: ['some unrelated today prompt'],
+    } satisfies TodayGeminiPrompts;
+
+    dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
+
+    // Give the orchestrator more than enough time to process. With the
+    // bug, the orchestrator would have sent a DOWNLOAD_REQUEST. With the
+    // fix, no download is sent at all.
+    await flushAsync(80);
+
+    const downloadCalls = mock.runtime.sendMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === 'DOWNLOAD_REQUEST',
+    );
+    expect(downloadCalls).toHaveLength(0);
+  });
+
+  it('skips a chat with action=skipped:other when myactivity returns no today prompts after refresh', async () => {
+    setupConversationDom([{ q: 'something', a: 'reply' }]);
+    // No TODAY_KEY at all. Refresh attempt also won't populate it (mock
+    // chrome.tabs.create is a no-op as far as storage.local is concerned).
+    dispose = startGeminiOrchestrator({ triggerDebounceMs: 1, refreshWaitMs: 1 });
+
+    await flushAsync(80);
+    const downloadCalls = mock.runtime.sendMessage.mock.calls.filter(
+      (c) => (c[0] as { type: string }).type === 'DOWNLOAD_REQUEST',
+    );
+    expect(downloadCalls).toHaveLength(0);
   });
 
   it('dedups identical content via the cross-tab convHashes hash', async () => {

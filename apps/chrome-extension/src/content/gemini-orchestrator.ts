@@ -53,11 +53,6 @@ export function startGeminiOrchestrator(
   console.log(TAG, 'started', { origin: location.origin, href: location.href });
   let seq = 0;
 
-  // Per-conversation, per-tab baseline. The first time the tab observes a
-  // conversation, whatever turns are present are "history that this tab
-  // didn't author". Anything beyond that index in this tab's lifetime is
-  // "newSession" — guaranteed to be today, no myactivity match needed.
-  const baselineByConv = new Map<string, number>();
   // In-tab "did we just send this exact slice" guard.
   let lastExportKey: string | null = null;
   // Cross-tab hash dedup, mirrored from chrome.storage.local 'convHashes'.
@@ -172,58 +167,52 @@ export function startGeminiOrchestrator(
         return;
       }
 
-      // Establish baseline on first observation in this tab.
-      if (!baselineByConv.has(convId)) baselineByConv.set(convId, turns.length);
-      const baseline = baselineByConv.get(convId)!;
-      const existing = turns.slice(0, baseline);
-      const newSession = turns.slice(baseline);
-
-      // Resolve which existing turns are "today" via the myactivity prompt
-      // list. newSession is by definition this-tab-this-day, so it's always
-      // included.
+      // Resolve which turns are "today" via the myactivity prompt list.
+      //
+      // We deliberately do NOT use a per-tab "baseline" / "newSession" split
+      // anymore. The original design assumed any turn beyond the baseline
+      // was "guaranteed today" (the user just typed it). That assumption
+      // breaks during backfill: clicking a sidebar link causes the SPA to
+      // re-render the chat in stages, and an early MutationObserver tick
+      // can pin the baseline to a partially-rendered (or empty) DOM. The
+      // next tick then sees the full conversation and treats the entire
+      // history as "newSession" → we'd download the whole chat as today's.
+      //
+      // Strict rule: every turn must be vouched for by a matching
+      // myactivity entry. If myactivity is empty / stale we attempt one
+      // refresh; if still nothing, skip the chat entirely (don't guess).
       let today = await readTodayPrompts();
-      if (!today && newSession.length === 0) {
+      if (!today || today.prompts.length === 0) {
         await requestActivityRefresh(tag);
         await sleep(refreshWaitMs);
         today = await readTodayPrompts();
       }
-      if (!today) {
-        if (newSession.length === 0) {
-          console.log(tag, 'skip: no myactivity data and no newSession');
-          return;
-        }
-        // Still export newSession — it's guaranteed to be today.
-        today = { date: todayDateString(), prompts: [] };
+      if (!today || today.prompts.length === 0) {
+        console.log(tag, 'skip: no today prompts available from myactivity');
+        dispatchCaptureDecision({
+          provider: 'gemini',
+          conversationId: convId,
+          action: 'skipped:other',
+          reason: 'no today prompts available',
+        });
+        return;
       }
 
-      let existingToday = computeTodaySlice(existing, today.prompts);
-      if (existingToday.length === 0 && newSession.length === 0) {
-        // Neither newSession nor a today-match — try one more refresh in
-        // case myactivity hadn't recorded the latest prompt yet.
-        await requestActivityRefresh(tag);
-        await sleep(refreshWaitMs);
-        const refreshed = await readTodayPrompts();
-        if (refreshed) {
-          today = refreshed;
-          existingToday = computeTodaySlice(existing, refreshed.prompts);
-        }
-      }
-
-      const slice = [...existingToday, ...newSession];
+      const slice = computeTodaySlice(turns, today.prompts);
+      console.log(tag, 'slice composition', {
+        turns: turns.length,
+        todayPromptsLen: today.prompts.length,
+        sliceLen: slice.length,
+      });
       if (slice.length === 0) {
         console.log(tag, 'skip: nothing in today slice', {
           turns: turns.length,
-          baseline,
-          existingTurns: existing.length,
-          newSessionTurns: newSession.length,
           todayPrompts: today.prompts.length,
         });
         // Detailed comparison so the user can see exactly which prompt
-        // mismatched (and how the normalised forms differ). Only emitted
-        // when there ARE today prompts AND existing turns to compare —
-        // otherwise the high-level log above is sufficient.
-        if (existing.length > 0 && today.prompts.length > 0) {
-          traceSliceMismatch(existing, today.prompts, (...args) =>
+        // mismatched (and how the normalised forms differ).
+        if (turns.length > 0 && today.prompts.length > 0) {
+          traceSliceMismatch(turns, today.prompts, (...args) =>
             console.warn(tag, ...args),
           );
         }

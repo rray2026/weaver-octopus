@@ -30,6 +30,8 @@ export interface DevCommandHandlers {
   setClaudeMode: (mode: 'intercept' | 'fetch') => Promise<unknown> | unknown;
   openTab: (url: string) => Promise<unknown> | unknown;
   reloadExtension: () => void;
+  /** Read selected (or all) keys from chrome.storage.local and log them. */
+  dumpStorage: (keys?: string[]) => Promise<unknown> | unknown;
 }
 
 interface DevCommand {
@@ -141,6 +143,12 @@ async function executeCommand(
     case 'reload': {
       console.log(TAG, 'forcing chrome.runtime.reload()');
       handlers.reloadExtension();
+      return;
+    }
+    case 'dump-storage': {
+      const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : undefined;
+      const result = await handlers.dumpStorage(keys);
+      console.log(TAG, 'dump-storage', result);
       return;
     }
     default:
