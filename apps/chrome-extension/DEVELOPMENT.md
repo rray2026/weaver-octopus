@@ -101,6 +101,55 @@ auto-reload poller, log forwarder, command poller, and the
 http://127.0.0.1/* permission are all absent — no extra requests, no
 extra storage keys, no dev surface in the shipped bundle.
 
+### Debugging methodology that worked in this codebase
+
+Sequence that consistently led to root cause:
+1. **Reproduce in the wild via dev:trigger**, never click through the UI.
+2. **Compare two runs of the same scenario.** Same input, different
+   outcome → the orchestrator depends on something non-deterministic
+   (DOM hydration timing, storage state, etc.). The Gemini "downloads
+   whole historical chat" and "today chat now skipped" bugs both showed
+   up this way.
+3. **Dump the relevant chrome.storage.local keys.** `dev:trigger
+   '{"action":"dump-storage","keys":[...]}'`. If a chat was processed
+   differently across runs, look at `todayGemini` / `convHashes` /
+   `claudeApiHeaders` and see what changed.
+4. **Add the smallest extra log that turns the bug from invisible to
+   obvious.** Examples we added mid-session:
+   - `slice composition` on the Gemini orchestrator's success path so we
+     could correlate downloads with `today.prompts.length`.
+   - `traceSliceMismatch` on the skip path with per-turn-vs-per-prompt
+     verdict (EQUAL / TRUNCATED-PREFIX / no).
+   - Source-tagged log lines (`background` / `content:gemini.google.com`
+     / `popup`) — `grep` on `source` narrows fast.
+5. **Walk the math.** If `slice=29` from `todayPromptsLen=1`, that's
+   mathematically impossible from `computeTodaySlice` alone (`minIdx`
+   strictly increases) → the matcher isn't where the bug is. Trace
+   pointed to the `newSession` fallback instead.
+6. **Land the fix as a unit test first.** Both Gemini bugs have
+   regression tests in `gemini.test.ts` named after the failure mode.
+
+### MV3 service-worker keepalive — known limit
+
+The dev infrastructure uses two layers to keep the SW alive:
+- `setInterval`-driven long-poll fetch to `:9876/command` (in-flight
+  fetch counts as activity).
+- `chrome.alarms` keepalive every 30s (the listener is a no-op; the
+  wake-up itself re-runs module top-level which restarts the long-poll).
+
+Both fail when Chrome decides the extension is *deeply* idle (laptop
+sleep, system suspend, very long inactivity). When that happens, the
+log file goes silent and queued commands sit unconsumed.
+
+Recovery (manual):
+- Click the extension's **Service Worker** link in `chrome://extensions`,
+  OR open the popup, OR refresh `claude.ai` / `gemini.google.com` —
+  any of these wakes the SW, which re-establishes the long-poll within
+  ~1 second.
+
+If you see `dev:trigger` return 202 but no command-execution log
+appears within ~3s, the SW is asleep. Use one of the above.
+
 ### Other speed-up knobs
 
 - **Backfill interval**: in the popup, the 间隔 inputs accept `0 ~ 0` —

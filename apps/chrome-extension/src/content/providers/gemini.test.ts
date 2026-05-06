@@ -167,31 +167,36 @@ describe('computeTodaySlice', () => {
     expect(computeTodaySlice([t('hi')], [])).toEqual([]);
   });
 
-  it('returns the tail whose user prompts match myactivity in newest-first order', () => {
-    const turns = [t('history-1'), t('history-2'), t('today-A'), t('today-B')];
-    // myactivity newest-first: today-B is newest, then today-A.
+  it('matches turns whose user prompt appears in today, regardless of position', () => {
+    const turns = [t('history-1'), t('today-A'), t('history-2'), t('today-B')];
     const result = computeTodaySlice(turns, ['today-B', 'today-A']);
+    // Both today-A and today-B are matched. Output preserves DOM order
+    // (NOT myactivity order), so today-A comes first.
     expect(result).toEqual([t('today-A'), t('today-B')]);
   });
 
-  it('stops as soon as a turn fails to match (history not in today)', () => {
-    const turns = [t('old'), t('today-A'), t('today-B')];
-    const result = computeTodaySlice(turns, ['today-B', 'today-A']);
-    expect(result).toEqual([t('today-A'), t('today-B')]);
+  it('regression: matches a today turn even when the chat tail is non-today (multi-day chat)', () => {
+    // The previous greedy-from-tail logic would skip this entirely because
+    // turn[2] ("git…clone") didn't match the only today entry. The new
+    // logic finds turn[1] ("today-A") in the middle.
+    const turns = [t('history-1'), t('today-A'), t('git clone something')];
+    const result = computeTodaySlice(turns, ['today-A']);
+    expect(result).toEqual([t('today-A')]);
   });
 
-  it('returns [] when the most recent turn has no match in today', () => {
-    const turns = [t('today-A'), t('not-in-today')];
-    expect(computeTodaySlice(turns, ['today-A'])).toEqual([]);
+  it('returns [] when no turn matches', () => {
+    const turns = [t('today-A')];
+    expect(computeTodaySlice(turns, ['unrelated'])).toEqual([]);
   });
 
-  it('does NOT reuse the same myactivity index for two different turns', () => {
-    // If both turns matched activity[0], we'd incorrectly include both.
-    // The strict-increasing minIdx forces only one consumption.
+  it('claim-once: a single myactivity entry only matches one turn even if two have the same text', () => {
     const turns = [t('A'), t('A')];
-    const result = computeTodaySlice(turns, ['A']);
-    // Only the most recent turn matches; the earlier one can't reuse index 0.
-    expect(result).toEqual([t('A')]);
+    expect(computeTodaySlice(turns, ['A'])).toEqual([t('A')]); // only the first
+  });
+
+  it('claim-once allows two duplicate prompts when myactivity has two entries', () => {
+    const turns = [t('A'), t('A')];
+    expect(computeTodaySlice(turns, ['A', 'A'])).toEqual([t('A'), t('A')]);
   });
 
   it('handles the truncation case where myactivity has "..." suffix', () => {
@@ -200,10 +205,15 @@ describe('computeTodaySlice', () => {
     expect(result).toHaveLength(1);
   });
 
-  it('stops on the first turn with empty userText', () => {
+  it('skips turns with empty userText without breaking iteration', () => {
     const turns = [t(''), t('today-A')];
-    const result = computeTodaySlice(turns, ['today-A']);
-    expect(result).toEqual([t('today-A')]);
+    expect(computeTodaySlice(turns, ['today-A'])).toEqual([t('today-A')]);
+  });
+
+  it('handles "你说" Gemini accessibility prefix on the chat side', () => {
+    const turns = [t('你说\n\n东亚文化圈和基督文化圈对比')];
+    const result = computeTodaySlice(turns, ['东亚文化圈和基督文化圈对比']);
+    expect(result).toHaveLength(1);
   });
 });
 

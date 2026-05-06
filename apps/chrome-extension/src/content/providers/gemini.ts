@@ -109,27 +109,65 @@ export function cleanTitle(rawTitle: string): string {
   return rawTitle.replace(/\s*[-–—]\s*Gemini.*$/i, '').trim();
 }
 
-/** Walks the conversation backwards and finds the longest contiguous tail of
- *  turns whose user prompts appear in `todayPrompts` in order (newest-first).
- *  Returns that tail. If today's first prompt doesn't match the most recent
- *  turn, returns []. The same myactivity entry is never reused for two turns
- *  (`minIdx` is strictly increasing). */
+/** Returns the subset of turns whose user prompt matches some today
+ *  myactivity entry. Each myactivity entry is claimed at most once (a
+ *  user prompt repeated within the chat must correspond to two distinct
+ *  myactivity entries to be matched twice). Output preserves DOM order.
+ *
+ *  Replaces the previous "greedy from tail" semantics, which assumed
+ *  today's turns were always a contiguous suffix of the conversation:
+ *
+ *  - The old behaviour broke for chats spanning multiple days where the
+ *    user kept asking new (non-today) questions in the same conversation
+ *    after asking a today question — today's match in the middle was
+ *    invisible to the walker, so the chat got skipped entirely.
+ *  - It also produced non-deterministic backfill outcomes: a chat that
+ *    happened to render the today turn last during a partial DOM tick
+ *    would download successfully, then later (with the full DOM) get
+ *    skipped because a non-today turn now sat at the tail.
+ *
+ *  The new algorithm scans front-to-back and never decides based on tail
+ *  position alone. */
 export function computeTodaySlice(
   turns: GeminiTurn[],
   todayPrompts: string[],
 ): GeminiTurn[] {
   if (!Array.isArray(todayPrompts) || todayPrompts.length === 0) return [];
-  let cutFrom = turns.length;
-  let minIdx = -1;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const userText = turns[i]!.userText;
-    if (!userText) break;
-    const idx = findMatchIndexAfter(userText, todayPrompts, minIdx);
-    if (idx < 0) break;
-    minIdx = idx;
-    cutFrom = i;
+  const claimed = new Set<number>();
+  const out: GeminiTurn[] = [];
+  for (const turn of turns) {
+    const u = turn.userText;
+    if (!u) continue;
+    let matched = -1;
+    for (let j = 0; j < todayPrompts.length; j++) {
+      if (claimed.has(j)) continue;
+      if (matchesPrompt(u, todayPrompts[j] ?? '')) {
+        matched = j;
+        break;
+      }
+    }
+    if (matched >= 0) {
+      claimed.add(matched);
+      out.push(turn);
+    }
   }
-  return turns.slice(cutFrom);
+  return out;
+}
+
+/** Returns true iff `userText` (as rendered in the chat DOM) and
+ *  `activityPrompt` (as scraped from myactivity) refer to the same prompt.
+ *  Centralised so the trace function and the slicer agree on the rule. */
+export function matchesPrompt(userText: string, activityPrompt: string): boolean {
+  const u = normalizeForMatch(userText);
+  const t = normalizeForMatch(activityPrompt);
+  if (!u || !t) return false;
+  if (u === t) return true;
+  // myactivity sometimes truncates very long prompts with "…" / "...";
+  // accept a chat prompt that starts with the truncated form, provided
+  // the matching prefix is substantial (≥ 8 normalised chars) — short
+  // prefixes ("hi…") would otherwise false-match generic chat openings.
+  if (isTruncated(activityPrompt) && t.length >= 8 && u.startsWith(t)) return true;
+  return false;
 }
 
 /** True if myactivity visibly truncated this prompt (it ends with one or
@@ -199,10 +237,11 @@ export function findMatchIndexAfter(
   return -1;
 }
 
-/** Diagnostic dump explaining why `computeTodaySlice` returned []. Walks
- *  the same logic as the slicer but logs every comparison so the user can
- *  see exactly which prompt mismatched and how it normalised. Called from
- *  the orchestrator's "nothing in today slice" branch. */
+/** Diagnostic dump explaining why `computeTodaySlice` returned []. Mirrors
+ *  the slicer's algorithm (front-to-back, claim-once) and logs every
+ *  comparison so the user can see exactly which prompt mismatched and how
+ *  it normalised. Called from the orchestrator's "nothing in today slice"
+ *  branch. */
 export function traceSliceMismatch(
   turns: GeminiTurn[],
   todayPrompts: string[],
@@ -210,7 +249,7 @@ export function traceSliceMismatch(
 ): void {
   log('[gemini:slice-trace] today prompts (newest-first, normalised):');
   if (todayPrompts.length === 0) {
-    log('  (myactivity returned no today prompts — orchestrator will fall back to newSession only)');
+    log('  (myactivity returned no today prompts)');
   } else {
     todayPrompts.forEach((p, i) => {
       log(`  myactivity[${i}] raw=${JSON.stringify(p)} → norm=${JSON.stringify(normalizeForMatch(p))} truncated=${isTruncated(p)}`);
@@ -222,21 +261,22 @@ export function traceSliceMismatch(
     log(`  turn[${i}] user=${JSON.stringify(turns[i]!.userText)} → norm=${JSON.stringify(normalizeForMatch(turns[i]!.userText))}`);
   }
   if (todayPrompts.length === 0) return;
-  log('[gemini:slice-trace] walking newest→oldest, comparing each turn against remaining myactivity entries:');
-  let minIdx = -1;
-  for (let i = turns.length - 1; i >= 0; i--) {
+  log('[gemini:slice-trace] walking front→back, claim-once:');
+  const claimed = new Set<number>();
+  for (let i = 0; i < turns.length; i++) {
     const userText = turns[i]!.userText;
     if (!userText) {
-      log(`  turn[${i}] EMPTY userText → stop`);
-      return;
+      log(`  turn[${i}] EMPTY userText → skip`);
+      continue;
     }
     const u = normalizeForMatch(userText);
     if (!u) {
-      log(`  turn[${i}] norm is empty → stop`);
-      return;
+      log(`  turn[${i}] norm is empty → skip`);
+      continue;
     }
     let matched = -1;
-    for (let j = minIdx + 1; j < todayPrompts.length; j++) {
+    for (let j = 0; j < todayPrompts.length; j++) {
+      if (claimed.has(j)) continue;
       const raw = todayPrompts[j] ?? '';
       const t = normalizeForMatch(raw);
       const eq = u === t;
@@ -250,13 +290,13 @@ export function traceSliceMismatch(
       }
     }
     if (matched < 0) {
-      log(`  turn[${i}] NO MATCH → stop walking; this turn (and everything older) is excluded`);
-      return;
+      log(`  turn[${i}] NO MATCH against any unclaimed myactivity entry`);
+      continue;
     }
+    claimed.add(matched);
     log(`  turn[${i}] ✓ matched myactivity[${matched}]`);
-    minIdx = matched;
   }
-  log('[gemini:slice-trace] (every turn matched — slice should NOT have been empty; check baseline / newSession logic)');
+  log(`[gemini:slice-trace] done. matched ${claimed.size} of ${todayPrompts.length} myactivity entries`);
 }
 
 /** Cheap content-fingerprint for in-tab dedup (avoid re-sending the same
