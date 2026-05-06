@@ -4,7 +4,7 @@ import { geminiBackfillAdapter, collectGeminiChatLinks } from './backfill/gemini
 import { runBackfill } from './backfill/runner.js';
 import { startClaudeStaleListener } from './claude-stale.js';
 import { startGeminiOrchestrator } from './gemini-orchestrator.js';
-import { setBackfillInFlight } from './live-capture-gate.js';
+import { setBackfillInFlight } from './backfill-gate.js';
 import { startOrchestrator } from './orchestrator.js';
 import { ChatGPTParser } from './providers/chatgpt.js';
 import { ClaudeParser } from './providers/claude.js';

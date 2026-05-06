@@ -1,7 +1,7 @@
 import { dispatchCaptureDecision } from './captureEvents.js';
 import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
-import { isLiveCaptureAllowed } from './live-capture-gate.js';
+import { isBackfillInFlight } from './backfill-gate.js';
 import { messagesToMarkdown, sanitizeFilename } from './markdown.js';
 import type { ProviderParser } from './providers/types.js';
 import type { Provider } from '../types/index.js';
@@ -125,11 +125,11 @@ export function startOrchestrator(
     const id = ++seq;
     const tag = `${TAG}#${id}`;
     console.log(tag, 'handle start', { conversationId: msg.conversationId });
-    // Gate: live capture is OFF by default. If the user hasn't opted in
-    // and no backfill is running, drop the event silently — keeps the
-    // orchestrator listeners cheap when the user just wants to browse.
-    if (!(await isLiveCaptureAllowed())) {
-      console.log(tag, 'skip: live capture disabled (no backfill in flight)');
+    // Backfill-only: drop every observed conversation when the runner
+    // isn't actively driving this tab. Passive browsing produces zero
+    // downloads — only batch backfill writes files.
+    if (!isBackfillInFlight()) {
+      console.log(tag, 'skip: no backfill in flight');
       return;
     }
     await hydrationPromise;

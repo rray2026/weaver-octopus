@@ -51,10 +51,18 @@ chrome.runtime.onInstalled.addListener((details) => {
   //  - claude-fetch-mode keys (abandoned: Claude's API still 403s when
   //    requests are replayed even with the full anthropic-* header set);
   //  - the legacy `todayGemini` key superseded by the multi-day
-  //    `geminiActivity` index. Old payload doesn't survive a refresh and
-  //    nothing reads it anymore, but keeping it around wastes storage.
+  //    `geminiActivity` index;
+  //  - `liveCaptureEnabled` from the deleted popup toggle (the
+  //    orchestrators now check `isBackfillInFlight()` only — there's no
+  //    longer a "live capture" mode for the user to opt INTO).
   void chrome.storage.local
-    .remove(['claudeApiHeaders', 'claudeCaptureMode', 'claudeOrgId', 'todayGemini'])
+    .remove([
+      'claudeApiHeaders',
+      'claudeCaptureMode',
+      'claudeOrgId',
+      'todayGemini',
+      'liveCaptureEnabled',
+    ])
     .catch(() => undefined);
 });
 

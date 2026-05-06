@@ -17,7 +17,7 @@
 import { dispatchCaptureDecision } from './captureEvents.js';
 import { computeRange, loadFilter } from './dateFilter.js';
 import { hashString } from './hash.js';
-import { isLiveCaptureAllowed } from './live-capture-gate.js';
+import { isBackfillInFlight } from './backfill-gate.js';
 import { messagesToMarkdown, sanitizeFilename, todayDateString } from './markdown.js';
 import {
   cleanTitle,
@@ -148,10 +148,10 @@ export function startGeminiOrchestrator(
     const id = ++seq;
     const tag = `${TAG}#${id}`;
     try {
-      // Gate: live capture is OFF by default. Backfill flips an in-memory
-      // flag during its run so this still passes for batch downloads.
-      if (!(await isLiveCaptureAllowed())) {
-        console.log(tag, 'skip: live capture disabled (no backfill in flight)');
+      // Backfill-only: drop the event when the runner isn't driving
+      // this tab. Passive browsing on gemini.google.com writes nothing.
+      if (!isBackfillInFlight()) {
+        console.log(tag, 'skip: no backfill in flight');
         return;
       }
       await hydrationPromise;

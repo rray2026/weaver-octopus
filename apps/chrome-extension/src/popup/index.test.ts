@@ -30,8 +30,6 @@ const POPUP_DOM = `
   <span id="cache-count"></span>
   <button id="reset-btn" type="button">Reset cache</button>
 
-  <input type="checkbox" id="live-capture-toggle" />
-
   <input type="number" id="interval-min" />
   <input type="number" id="interval-max" />
 
@@ -274,40 +272,6 @@ describe('popup', () => {
         intervalMinSec: 8,
         intervalMaxSec: 15,
       });
-    });
-  });
-
-  describe('live-capture toggle', () => {
-    it('starts unchecked when no preference is stored (default off)', async () => {
-      await loadPopup();
-      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
-      expect(toggle.checked).toBe(false);
-    });
-
-    it('reflects the previously stored value', async () => {
-      mock.storage.local['liveCaptureEnabled'] = true;
-      await loadPopup();
-      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
-      expect(toggle.checked).toBe(true);
-    });
-
-    it('persists to chrome.storage.local on change', async () => {
-      await loadPopup();
-      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
-      toggle.checked = true;
-      toggle.dispatchEvent(new Event('change'));
-      await flushAsync();
-      expect(mock.storage.local['liveCaptureEnabled']).toBe(true);
-    });
-
-    it('round-trips back to false on uncheck', async () => {
-      mock.storage.local['liveCaptureEnabled'] = true;
-      await loadPopup();
-      const toggle = document.getElementById('live-capture-toggle') as HTMLInputElement;
-      toggle.checked = false;
-      toggle.dispatchEvent(new Event('change'));
-      await flushAsync();
-      expect(mock.storage.local['liveCaptureEnabled']).toBe(false);
     });
   });
 

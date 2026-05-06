@@ -13,7 +13,6 @@ const LAST_DOWNLOAD_KEY = 'lastDownload';
 const HASH_STORAGE_KEY = 'convHashes';
 const BACKFILL_PROGRESS_KEY = 'backfillProgress';
 const BACKFILL_INTERVAL_KEY = 'backfillIntervalSec';
-const LIVE_CAPTURE_KEY = 'liveCaptureEnabled';
 const DEFAULT_INTERVAL_MIN_SEC = 1;
 const DEFAULT_INTERVAL_MAX_SEC = 2;
 const INTERVAL_HARD_MIN_SEC = 0;
@@ -109,13 +108,6 @@ async function init(): Promise<void> {
     }
   });
 
-  // ─── Live-capture toggle (off by default) ────────────────────────────────
-
-  const liveCaptureToggle = document.getElementById(
-    'live-capture-toggle',
-  ) as HTMLInputElement | null;
-  await initLiveCaptureToggle(liveCaptureToggle);
-
   // ─── Backfill interval inputs (per-chat random sleep range, in seconds) ──
 
   const intervalMinInput = document.getElementById('interval-min') as HTMLInputElement | null;
@@ -205,17 +197,6 @@ async function init(): Promise<void> {
       providersEl.appendChild(makeProviderRow(p, pp));
     }
     renderLog(logEl, prog);
-  }
-
-  async function initLiveCaptureToggle(
-    toggle: HTMLInputElement | null,
-  ): Promise<void> {
-    if (!toggle) return;
-    const stored = await chrome.storage.local.get(LIVE_CAPTURE_KEY);
-    toggle.checked = stored[LIVE_CAPTURE_KEY] === true;
-    toggle.addEventListener('change', async () => {
-      await chrome.storage.local.set({ [LIVE_CAPTURE_KEY]: toggle.checked });
-    });
   }
 
   async function initIntervalInputs(

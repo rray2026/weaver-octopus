@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setBackfillInFlight } from './backfill-gate.js';
 import { folderDateFromMessages, startOrchestrator } from './orchestrator.js';
 import type { ConversationData, ProviderParser } from './providers/types.js';
 import { installChromeMock, uninstallChromeMock, type ChromeMock } from '../../test/chromeMock.js';
@@ -50,10 +51,11 @@ describe('orchestrator', () => {
 
   beforeEach(() => {
     mockChrome = installChromeMock();
-    // Live capture is OFF by default in production. These tests assert
-    // the orchestrator's processing pipeline, not the gate — pre-enable
-    // so events aren't dropped at the front door.
-    mockChrome.storage.local['liveCaptureEnabled'] = true;
+    // The orchestrator's entry gate drops events when no backfill is in
+    // flight. These tests assert the downstream pipeline (parse → hash
+    // → download), not the gate itself, so flip the flag on for the
+    // whole describe block.
+    setBackfillInFlight(true);
     parser = {
       parseConversation: vi.fn((body) => body as ConversationData | null),
     };
@@ -62,6 +64,7 @@ describe('orchestrator', () => {
   afterEach(() => {
     dispose?.();
     dispose = undefined;
+    setBackfillInFlight(false);
     uninstallChromeMock();
   });
 

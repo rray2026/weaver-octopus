@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // @vitest-environment-options { "url": "https://gemini.google.com/app/abc12345-conv" }
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setBackfillInFlight } from './backfill-gate.js';
 import {
   deriveChatDate,
   pickPromptsInRange,
@@ -54,10 +55,10 @@ describe('startGeminiOrchestrator', () => {
     mock = installChromeMock({
       manifest: { host_permissions: ['https://gemini.google.com/*'] },
     });
-    // Live capture is OFF by default in production. Pre-enable so the
-    // orchestrator pipeline runs in tests; the gate itself is covered by
-    // live-capture-gate.test.ts.
-    mock.storage.local['liveCaptureEnabled'] = true;
+    // The orchestrator's entry gate drops events when no backfill is in
+    // flight. Flip it on for these pipeline tests; the gate itself is
+    // covered by backfill-gate.test.ts.
+    setBackfillInFlight(true);
     document.body.innerHTML = '';
     document.title = '';
   });
@@ -65,6 +66,7 @@ describe('startGeminiOrchestrator', () => {
   afterEach(() => {
     dispose?.();
     dispose = undefined;
+    setBackfillInFlight(false);
     uninstallChromeMock();
     document.body.innerHTML = '';
   });
