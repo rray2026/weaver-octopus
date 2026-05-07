@@ -19,8 +19,10 @@ The orchestrator never auto-merges. Each run lands a PR titled `Daily digest YYY
 
 ```
 apps/collect/
-├── config.sh                 # paths + schedule (sourced, no parser)
+├── config.sh                 # paths + schedule + retention (sourced, no parser)
 ├── orchestrator.sh           # main entry point
+├── cleanup.sh                # periodic state cleanup (logs, raw chats, dev-runtime.log)
+├── recover.sh                # diagnose + repair stuck pipeline state
 ├── lib/
 │   ├── chrome.sh             # restart, RPC server, wait helpers
 │   ├── claude.sh             # claude -p with shared --session-id
@@ -100,6 +102,41 @@ launchctl kickstart -k gui/$(id -u)/com.user.weaver-collect
 launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.user.weaver-collect.plist
 rm ~/Library/LaunchAgents/com.user.weaver-collect.plist
 ```
+
+## Maintenance
+
+### Cleanup (`cleanup.sh`)
+
+Periodic cleanup of accumulated state. The orchestrator runs this with `--apply` at the end of every successful run, so manual invocation is rarely needed.
+
+```bash
+./apps/collect/cleanup.sh             # dry-run by default
+./apps/collect/cleanup.sh --apply     # actually delete / truncate
+```
+
+What it touches (retention windows in `config.sh`):
+
+| Target | Default | Action |
+|--------|---------|--------|
+| `~/Library/Logs/weaver-collect/*.log` | older than 30 days | delete |
+| `~/Downloads/weaver-octopus/<YYYY-MM-DD>/` | folder name older than 30 days | `rm -rf` |
+| `apps/chrome-extension/.dev-runtime.log` | size > 10 MB | truncate (not delete — the SW is appending) |
+
+### Recover (`recover.sh`)
+
+Diagnose-and-fix for stuck pipeline state. Safe by default — dry-run reports findings, you decide whether to act.
+
+```bash
+./apps/collect/recover.sh             # diagnose only
+./apps/collect/recover.sh --apply     # kill stale procs, send stop-backfill
+```
+
+What it checks:
+
+1. **Orphan `caffeinate -dis` processes** whose orchestrator parent died. `--apply` kills them.
+2. **Multiple `ext-dev-rpc-server` instances**. Only the lowest-PID one binds 9876; `--apply` kills the rest.
+3. **Stuck extension state** — sends `stop-backfill` so `backfillProgress.state` is no longer `"running"`. `--apply` actually sends.
+4. **world-weaver state** — branch + dirty status reported, never auto-fixed (it might contain your manual work). The output shows the exact `git stash` / `git checkout` commands you'd run.
 
 ## Pre-flight semantics (why a run might decline to start)
 

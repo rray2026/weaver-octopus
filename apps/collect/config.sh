@@ -5,6 +5,13 @@
 # absolute. Tilde is expanded; ../ is resolved against apps/collect/.
 WORLD_WEAVER_PATH="../../../world/world-weaver"
 
+# Default branch to fork each daily auto/digest-* branch from. The
+# orchestrator checks this out at the start of every run so step 2 doesn't
+# accidentally inherit yesterday's auto branch (Step 3 leaves the working
+# tree on the new auto/digest-* branch, which would chain commits if not
+# reset).
+WORLD_WEAVER_DEFAULT_BRANCH="main"
+
 # Providers to back-fill. The chrome extension's start-backfill accepts any
 # subset of these.
 PROVIDERS=(claude gemini chatgpt)
@@ -45,3 +52,20 @@ BRANCH_TEMPLATE="auto/digest-{DATE}"
 # launchd schedule (used by launchd/install.sh). 02:00 local time.
 LAUNCHD_HOUR=2
 LAUNCHD_MINUTE=0
+
+# ─── Cleanup retention ───────────────────────────────────────────────────
+# cleanup.sh enforces these. Orchestrator runs cleanup at the end of every
+# run as a soft step (failures don't fail the run).
+
+# Per-day orchestrator logs in $LOG_DIR.
+LOG_RETENTION_DAYS=30
+
+# Raw chat directories under ~/Downloads/weaver-octopus/<YYYY-MM-DD>/.
+# Already-PR'd content is in world-weaver's git history; the raw markdown
+# is only useful for re-running a digest or auditing what was discarded.
+RAW_CHATS_RETENTION_DAYS=30
+
+# .dev-runtime.log accumulates every console.* from the SW, log forwarder,
+# content scripts. It's append-only and grows fast during backfill. We
+# truncate (not delete — the SW is appending) when it exceeds this.
+DEV_LOG_MAX_MB=10

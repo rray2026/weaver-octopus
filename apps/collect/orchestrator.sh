@@ -71,6 +71,15 @@ echo "─── 1. Pre-flight ───"
 git_assert_clean "$WORLD_WEAVER_PATH"
 git_assert_branch_unused "$WORLD_WEAVER_PATH" "$BRANCH"
 
+# Step 3 of the previous run left the tree on an auto/digest-* branch.
+# Reset to the default branch BEFORE digesting so the new branch forks
+# from a clean main, not from yesterday's PR branch.
+current_branch=$(git -C "$WORLD_WEAVER_PATH" branch --show-current)
+if [[ "$current_branch" != "$WORLD_WEAVER_DEFAULT_BRANCH" ]]; then
+  echo "[git] checkout $WORLD_WEAVER_DEFAULT_BRANCH (was on $current_branch)"
+  git -C "$WORLD_WEAVER_PATH" checkout "$WORLD_WEAVER_DEFAULT_BRANCH"
+fi
+
 # ─── 2. Environment ──────────────────────────────────────────────────────
 echo "─── 2. Environment ───"
 
@@ -137,5 +146,11 @@ claude_run "$SCRIPT_DIR/prompts/02-digest.md" resume
 
 echo "── Step 3/3: publish ──"
 claude_run "$SCRIPT_DIR/prompts/03-publish.md" resume
+
+# ─── 5. Cleanup ──────────────────────────────────────────────────────────
+# Soft step: failures here don't fail the run. Daily cleanup keeps logs +
+# raw chats from growing unbounded over time.
+echo "─── 5. Cleanup ───"
+"$SCRIPT_DIR/cleanup.sh" --apply || echo "[cleanup] non-fatal failure (continuing)"
 
 echo "─── Done ───"
