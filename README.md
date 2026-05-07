@@ -7,12 +7,16 @@ Node.js monorepo built with [pnpm workspaces](https://pnpm.io/workspaces) and [T
 ```
 weaver-octopus/
 ├── apps/
-│   ├── api/          # Express REST API (port 3000)
-│   └── web/          # Web server (port 3001)
+│   ├── api/             # Express REST API (port 3000)
+│   ├── web/             # Web server (port 3001)
+│   ├── chrome-extension/# Manifest V3 — captures Claude / Gemini / ChatGPT chats
+│   └── collect/         # Shell pipeline (launchd) — daily backfill + Claude
+│                        #   Code digest into a personal knowledge base
 ├── packages/
-│   ├── tsconfig/     # Shared TypeScript configurations
-│   ├── eslint-config/ # Shared ESLint configurations
-│   └── utils/        # Shared utilities (logger, result type, env helpers)
+│   ├── tsconfig/        # Shared TypeScript configurations
+│   ├── eslint-config/   # Shared ESLint configurations
+│   ├── utils/           # Shared utilities (logger, result type, env helpers)
+│   └── ext-dev-rpc/     # Terminal ↔ extension sidecar (log forwarder + RPC)
 ├── turbo.json
 └── pnpm-workspace.yaml
 ```
@@ -50,9 +54,10 @@ pnpm format
 |-----|------|-------------|
 | `@weaver-octopus/api` | 3000 | Express REST API |
 | `@weaver-octopus/web` | 3001 | Web server |
-| `@weaver-octopus/chrome-extension` | — | Chrome extension — captures Claude chats as Markdown |
+| `@weaver-octopus/chrome-extension` | — | Chrome extension — captures Claude / Gemini / ChatGPT chats as Markdown |
+| `apps/collect/` (shell) | — | Daily launchd pipeline that drives the extension's RPC and runs Claude Code over the result |
 
-See [`apps/chrome-extension/DEVELOPMENT.md`](apps/chrome-extension/DEVELOPMENT.md) for the extension's architecture, DOM selectors, and debugging guide.
+See [`apps/chrome-extension/DEVELOPMENT.md`](apps/chrome-extension/DEVELOPMENT.md) for the extension's architecture, DOM selectors, and debugging guide. See [`apps/collect/README.md`](apps/collect/README.md) for the daily pipeline's setup and configuration.
 
 ## Packages
 

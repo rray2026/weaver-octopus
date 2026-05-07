@@ -1,0 +1,137 @@
+# Chrome lifecycle helpers + RPC convenience.
+#
+# Why restart Chrome at the start of every run: macOS App Nap + Chrome's
+# per-tab throttling can leave inactive renderers paused such that
+# chrome.tabs.sendMessage from the SW hangs indefinitely. The cleanest
+# way to clear that state is a full quit + relaunch. See
+# apps/chrome-extension/DEVELOPMENT.md for the diagnosis trail.
+
+# Globals expected to be set by orchestrator before sourcing:
+#   $RPC_BASE              — e.g. http://127.0.0.1:9876
+#   $RPC_LOG_PATH          — absolute path the SW + server append to
+#   $CHROME_EXTENSION_DIR  — absolute path to apps/chrome-extension/
+# Globals this file sets:
+#   $RPC_SERVER_PID        — pid of the server process if WE spawned it (else empty)
+
+chrome_restart() {
+  echo "[chrome] quitting Chrome..."
+  osascript -e 'tell application "Google Chrome" to quit' 2>&1 \
+    | sed 's/^/[chrome] /' || true
+
+  # `quit` is async; wait for the process to actually exit.
+  local waited=0
+  while pgrep -x "Google Chrome" >/dev/null; do
+    sleep 1
+    waited=$((waited + 1))
+    if [[ $waited -ge 20 ]]; then
+      echo "[chrome] still running after 20s, force-killing"
+      pkill -x "Google Chrome" || true
+      break
+    fi
+  done
+
+  echo "[chrome] relaunching..."
+  open -a "Google Chrome"
+}
+
+# Spawn the RPC server in the background unless one is already listening.
+# Sets $RPC_SERVER_PID only when WE started it (so the trap can kill only
+# our own child, not steal a user-managed server).
+rpc_ensure_server() {
+  if curl -sf "$RPC_BASE/status" >/dev/null 2>&1; then
+    echo "[rpc] server already running at $RPC_BASE — reusing"
+    return 0
+  fi
+
+  echo "[rpc] starting server (log → $RPC_LOG_PATH)..."
+  EXT_DEV_RPC_LOG_PATH="$RPC_LOG_PATH" \
+    pnpm --silent --dir "$CHROME_EXTENSION_DIR" rpc \
+    >> "$RPC_LOG_PATH" 2>&1 &
+  RPC_SERVER_PID=$!
+
+  local waited=0
+  while ! curl -sf "$RPC_BASE/status" >/dev/null 2>&1; do
+    sleep 1
+    waited=$((waited + 1))
+    if [[ $waited -ge 15 ]]; then
+      echo "[rpc] server failed to come up within 15s (pid $RPC_SERVER_PID)"
+      return 1
+    fi
+  done
+  echo "[rpc] server ready at $RPC_BASE (pid $RPC_SERVER_PID, took ${waited}s)"
+}
+
+rpc_stop_if_owned() {
+  if [[ -n "${RPC_SERVER_PID:-}" ]]; then
+    echo "[rpc] stopping server we started (pid $RPC_SERVER_PID)"
+    kill "$RPC_SERVER_PID" 2>/dev/null || true
+  fi
+}
+
+# Wait for the SW to wake and finish enumerating providers — we know it's
+# alive when the next /command is consumed (cmd received entry in the log).
+chrome_wait_sw_alive() {
+  local timeout_sec=${1:-30}
+  local before
+  before=$(wc -l < "$RPC_LOG_PATH" 2>/dev/null || echo 0)
+
+  rpc_command '{"action":"diagnose"}' >/dev/null
+
+  local waited=0
+  while true; do
+    sleep 1
+    waited=$((waited + 1))
+    local after
+    after=$(wc -l < "$RPC_LOG_PATH" 2>/dev/null || echo 0)
+    if [[ $after -gt $before ]] && tail -n $((after - before)) "$RPC_LOG_PATH" \
+       | grep -q '"action":"diagnose"'; then
+      echo "[chrome] SW alive (took ${waited}s)"
+      return 0
+    fi
+    if [[ $waited -ge $timeout_sec ]]; then
+      echo "[chrome] SW did not respond to diagnose within ${timeout_sec}s"
+      return 1
+    fi
+  done
+}
+
+rpc_command() {
+  local body="$1"
+  curl -sf -X POST "$RPC_BASE/command" \
+    -H 'Content-Type: application/json' \
+    -d "$body"
+}
+
+# Poll backfillProgress.state until it transitions to a terminal state
+# ("done" or "idle"), or we hit the timeout. Returns 0 on done, 1 on
+# timeout. Uses the dev runtime log to read the dump-storage response.
+chrome_wait_backfill_done() {
+  local timeout_min=${1:-10}
+  local timeout_sec=$((timeout_min * 60))
+  local started
+  started=$(date +%s)
+  local poll_interval=5
+
+  while true; do
+    rpc_command '{"action":"dump-storage","keys":["backfillProgress"]}' >/dev/null
+    sleep "$poll_interval"
+
+    local state
+    state=$(tail -n 200 "$RPC_LOG_PATH" 2>/dev/null \
+      | grep -oE '"backfillProgress":\{[^}]*"state":"[^"]+"' \
+      | tail -1 \
+      | grep -oE '"state":"[^"]+"' \
+      | cut -d'"' -f4)
+
+    if [[ "$state" == "done" || "$state" == "idle" ]]; then
+      echo "[chrome] backfill state=$state"
+      return 0
+    fi
+
+    local elapsed=$(($(date +%s) - started))
+    if [[ $elapsed -ge $timeout_sec ]]; then
+      echo "[chrome] backfill timed out after ${timeout_min} minutes (last state=${state:-unknown})"
+      return 1
+    fi
+  done
+}

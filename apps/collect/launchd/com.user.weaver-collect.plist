@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.weaver-collect</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-l</string>
+        <string>__ORCHESTRATOR_PATH__</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>__HOUR__</integer>
+        <key>Minute</key>
+        <integer>__MINUTE__</integer>
+    </dict>
+
+    <!-- Run only when the Mac is awake; install.sh notes the pmset wake
+         schedule a user can opt into separately. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Inherit the user's PATH (so brew-installed claude, gh, pnpm work). -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+
+    <!-- launchd captures stderr only; orchestrator.sh does its own per-day
+         logging via tee. We still keep these for any catastrophic launchd
+         errors that happen before the script even starts. -->
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/launchd-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/launchd-stderr.log</string>
+</dict>
+</plist>
