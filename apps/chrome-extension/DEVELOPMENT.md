@@ -3,7 +3,8 @@
 Manifest V3 extension that captures conversations from `claude.ai`,
 `gemini.google.com` and `chatgpt.com` as Markdown files. **Backfill-only**
 — passive browsing never writes files; the user clicks 「批量回填」 in the
-popup (or `dev:trigger '{"action":"start-backfill"...}'`) to drive a
+popup, runs `dev:trigger '{"action":"start-backfill"...}'` in dev mode,
+or sends a `curl` command to the production RPC server to drive a
 sidebar walk that downloads in-range chats.
 
 | Provider | Capture mechanism | Date attribution |
@@ -32,13 +33,21 @@ not today. Determined by `max(createdAt)` over in-range messages
 ```bash
 # From repo root
 pnpm install
-pnpm --filter @weaver-octopus/chrome-extension build
+pnpm --filter @weaver-octopus/chrome-extension build        # production
+pnpm --filter @weaver-octopus/chrome-extension build:rpc    # production + CLI/curl RPC
+pnpm --filter @weaver-octopus/chrome-extension build:dev    # dev sidecar (same as dev:hot once)
 
 # Watch mode (auto-rebuild on save)
 pnpm --filter @weaver-octopus/chrome-extension dev
 ```
 
 Output: `dist/` — load this folder as an unpacked extension in Chrome.
+
+| Build variant | `__WEAVER_DEV__` | `__WEAVER_RPC__` | Extra manifest permission | Use when |
+|---------------|:---:|:---:|---|---|
+| `build` | ✗ | ✗ | — | Release / daily use, no RPC |
+| `build:rpc` | ✗ | ✓ | `http://127.0.0.1/*` | Daily use + curl/script automation |
+| `build:dev` / `dev:hot` | ✓ | ✗ | `http://127.0.0.1/*` | Active development |
 
 ## Load in Chrome
 
@@ -152,6 +161,254 @@ auto-reload poller, log forwarder, command poller, and the
 http://127.0.0.1/* permission are all absent — no extra requests, no
 extra storage keys, no dev surface in the shipped bundle.
 
+## Production RPC — programmatic / curl access
+
+`build:rpc` compiles a production bundle where `__WEAVER_RPC__` is true.
+The background SW starts a **command poller** (long-poll on
+`http://127.0.0.1:9876/command`) and a **log forwarder** (forwarding
+`console.*` output to the same server), but without the dev-only
+auto-reload machinery. This lets you control the extension from any
+script or shell using plain `curl`.
+
+### Setup
+
+**Step 1 — build the RPC variant:**
+
+```bash
+pnpm --filter @weaver-octopus/chrome-extension build:rpc
+```
+
+The build patches `dist/manifest.json` to add `http://127.0.0.1/*` to
+`host_permissions` so the SW can reach the local command server.
+
+**Step 2 — reload the extension in Chrome:**
+
+`chrome://extensions` → click **↺** on the Weaver Octopus card.
+
+**Step 3 — start the command server** (keep this terminal open):
+
+```bash
+pnpm --filter @weaver-octopus/chrome-extension rpc
+# or equivalently:
+# npx ext-dev-rpc-server
+```
+
+Server listens on `http://127.0.0.1:9876` (override with
+`EXT_DEV_RPC_PORT=<n>`). Log file defaults to
+`apps/chrome-extension/.dev-runtime.log` (override with
+`EXT_DEV_RPC_LOG_PATH=<path>`).
+
+**Step 4 — verify connectivity:**
+
+```bash
+curl -s http://127.0.0.1:9876/status | jq .
+# → {"ok":true,"startedAt":…,"queuedCommands":0,…}
+```
+
+Within ~1s of the extension loading, the log file will show:
+```
+[weaver:rpc][cmd] long-poll loop started
+```
+
+If nothing appears for >5s, wake the SW: open the popup, click the
+**Service Worker** link in `chrome://extensions`, or refresh a
+`claude.ai` / `gemini.google.com` tab.
+
+### Tail live logs
+
+```bash
+tail -F apps/chrome-extension/.dev-runtime.log
+```
+
+Every `console.*` from the background SW and every command result appear
+here as JSONL. Pipe through `jq` for readability:
+
+```bash
+tail -F apps/chrome-extension/.dev-runtime.log \
+  | jq --unbuffered 'select(.args != null) | .args'
+```
+
+### curl command reference
+
+All commands use `POST /command` with a JSON body containing `"action"`.
+The server returns `202 {"ok":true,"queued":{…}}` immediately; the SW
+picks up the command within ~100ms and logs the result.
+
+#### Backfill
+
+```bash
+# All three providers (default pacing 1-2s between chats)
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"start-backfill","providers":["claude","chatgpt","gemini"]}'
+
+# Single provider, zero pacing (fastest possible — use with care)
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"start-backfill","providers":["claude"],"intervalMinSec":0,"intervalMaxSec":0}'
+
+# Stop an in-flight backfill
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"stop-backfill"}'
+```
+
+#### Date filter
+
+```bash
+# Presets
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"today"}'
+
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"yesterday"}'
+
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"last7days"}'
+
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"thisWeek"}'
+
+# Custom range (YYYY-MM-DD)
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"range","start":"2026-04-01","end":"2026-04-30"}'
+```
+
+`type` must be one of `today | yesterday | last7days | thisWeek | range`.
+For `range`, `start` and `end` are inclusive YYYY-MM-DD strings.
+
+#### Diagnostics
+
+```bash
+# Health snapshot: version + permissions + open tabs + storage summary
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"diagnose"}'
+
+# Read specific chrome.storage.local keys
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"dump-storage","keys":["backfillProgress","dateFilter","convHashes"]}'
+
+# Read all storage keys (omit "keys")
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"dump-storage"}'
+
+# Clear all caches (convHashes / lastDownload / geminiActivity / backfillProgress)
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"reset-cache"}'
+
+# DOM snapshot — selector diagnostics on claude.ai / gemini.google.com tab
+# target: "claude" | "gemini" (omit for both)
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"snapshot-dom","target":"gemini"}'
+```
+
+#### Gemini activity index
+
+```bash
+# Reload myactivity.google.com to refresh the prompt index
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"refresh-activity"}'
+
+# force:true bypasses the 30s throttle
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"refresh-activity","force":true}'
+
+# Diagnostics from the myactivity content script
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"inspect-myactivity"}'
+```
+
+#### Misc
+
+```bash
+# Open a URL in a new Chrome tab
+curl -s -X POST http://127.0.0.1:9876/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"open","url":"https://claude.ai/chat/abc..."}'
+
+# Server health (no SW needed — answered by the HTTP server directly)
+curl -s http://127.0.0.1:9876/status
+```
+
+### Wait for backfill completion
+
+The `start-backfill` command returns immediately (`ok:true`). To poll
+for completion, read `backfillProgress.state` from storage:
+
+```bash
+until [ "$(
+  curl -s -X POST http://127.0.0.1:9876/command \
+    -H 'Content-Type: application/json' \
+    -d '{"action":"dump-storage","keys":["backfillProgress"]}' > /dev/null
+  sleep 2
+  tail -1 apps/chrome-extension/.dev-runtime.log \
+    | jq -r '.args[-1].backfillProgress.state // empty'
+)" = "done" ]; do sleep 3; done
+echo "Backfill complete"
+```
+
+A simpler approach: `tail -F` the log and look for the line
+`[weaver:bg] all backfill dispatches finished`.
+
+### Typical automation script
+
+```bash
+#!/bin/bash
+# Daily backfill of yesterday's conversations.
+set -euo pipefail
+RPC=http://127.0.0.1:9876
+
+curl -sf -X POST $RPC/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"set-filter","type":"yesterday"}'
+
+curl -sf -X POST $RPC/command \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"start-backfill","providers":["claude","chatgpt","gemini"]}'
+
+echo "Backfill queued. Tail logs: tail -F apps/chrome-extension/.dev-runtime.log"
+```
+
+### Differences from dev mode
+
+| Feature | `build:dev` (dev mode) | `build:rpc` (production RPC) |
+|---------|----------------------|------------------------------|
+| Command poller | ✓ | ✓ |
+| Log forwarder | ✓ | ✓ |
+| Auto-reload on rebuild | ✓ | ✗ |
+| Keepalive alarm | ✓ (every 30s) | ✗ (alarm cleared on startup) |
+| `reload` command | ✓ | ✗ |
+| `build_id.txt` emitted | ✓ | ✗ |
+| `__WEAVER_DEV__` | `true` | `false` |
+| `__WEAVER_RPC__` | `false` | `true` |
+
+### SW keepalive in production RPC mode
+
+The RPC build has no keepalive alarm (the dev alarm is cleared on
+startup). The long-poll fetch itself keeps the SW alive for up to 25s.
+After the 25s timeout the SW may be suspended by Chrome; it wakes again
+as soon as the next `curl` command is sent (the incoming fetch re-activates it).
+
+If you send a command and see no execution log within ~5s:
+1. Open the popup, OR
+2. Click **Service Worker** in `chrome://extensions`, OR
+3. Refresh a `claude.ai` / `gemini.google.com` tab.
+
+Any of these wakes the SW and re-establishes the long-poll.
+
 ### ⚠️ After every `pnpm build` (production), rebuild dev
 
 `pnpm build` (prod) overwrites `dist/` with code that has `__WEAVER_DEV__`
@@ -242,7 +499,8 @@ appears within ~3s, the SW is asleep. Use one of the above.
   - `[weaver:claude-stale]` cache invalidation on Claude chat mutations
   - `[weaver:bg]` background coordinator
   - `[weaver:backfill][<provider>]` backfill runner
-  - `[ext-dev-rpc][auto-reload]` / `[ext-dev-rpc][cmd]` dev sidecar
+  - `[ext-dev-rpc][auto-reload]` / `[ext-dev-rpc][cmd]` dev sidecar (dev mode)
+  - `[weaver:rpc][cmd]` production RPC command poller
 - **Slice-mismatch trace**: when Gemini logs `skip: nothing in today
   slice`, it follows up with a per-turn EQUAL/no diff — read those lines
   to see exactly why a chat was excluded.

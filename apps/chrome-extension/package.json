@@ -5,10 +5,12 @@
   "scripts": {
     "build": "vite build",
     "build:dev": "WEAVER_DEV=1 vite build",
+    "build:rpc": "WEAVER_RPC=1 vite build",
     "dev": "vite build --watch",
     "dev:hot": "WEAVER_DEV=1 vite build --watch",
     "dev:logs": "ext-dev-rpc-server",
     "dev:trigger": "ext-dev-rpc-trigger",
+    "rpc": "ext-dev-rpc-server",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

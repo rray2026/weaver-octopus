@@ -2,18 +2,24 @@ import { resolve } from 'path';
 import { defineConfig } from 'vite';
 import { extDevRpcPlugin } from '@weaver-octopus/ext-dev-rpc/vite';
 
-// `WEAVER_DEV=1 pnpm dev` enables the dev-rpc sidecar:
+// `WEAVER_DEV=1 pnpm dev` enables the full dev-rpc sidecar:
 //   - emits dist/build_id.txt on each rebuild
 //   - patches dist/manifest.json with localhost host_permissions
-// Production (`pnpm build`) leaves __WEAVER_DEV__ false so the entire
-// dev surface is dead-code-eliminated.
+//   - auto-reload, log forwarding, command poller
+// `WEAVER_RPC=1 pnpm build:rpc` enables the production command-poller only:
+//   - patches dist/manifest.json with localhost host_permissions
+//   - command poller (no auto-reload, no log forwarding)
+// Plain `pnpm build` leaves both flags false — entire RPC surface is
+// dead-code-eliminated by Rollup.
 const isDev = process.env['WEAVER_DEV'] === '1';
+const isRpc = process.env['WEAVER_RPC'] === '1';
 
 export default defineConfig({
   define: {
     __WEAVER_DEV__: JSON.stringify(isDev),
+    __WEAVER_RPC__: JSON.stringify(isRpc),
   },
-  plugins: extDevRpcPlugin({ enabled: isDev }),
+  plugins: extDevRpcPlugin({ enabled: isDev || isRpc, emitBuildId: isDev }),
   build: {
     outDir: 'dist',
     emptyOutDir: true,

@@ -81,193 +81,211 @@ chrome.tabs.onRemoved.addListener((closedTabId) => {
 // Dev-only: wire @weaver-octopus/ext-dev-rpc — forwarder + auto-reload +
 // long-poll command queue. The whole call is dead-code-eliminated when
 // __WEAVER_DEV__ is false.
+// Shared command handlers used by both dev and production-rpc modes.
+// All referenced identifiers (startBackfill, stopBackfill, …) are function
+// declarations defined below — safe to reference here via closure.
+function buildRpcHandlers(mode: string) {
+  return {
+    'start-backfill': async (cmd: Record<string, unknown>) => {
+      const rawProviders = Array.isArray(cmd['providers'])
+        ? (cmd['providers'] as unknown[])
+        : ['claude', 'gemini'];
+      const providers = rawProviders.filter(
+        (p): p is Provider => p === 'claude' || p === 'gemini' || p === 'chatgpt',
+      );
+      return startBackfill(providers, mode, {
+        intervalMinSec:
+          typeof cmd['intervalMinSec'] === 'number' ? cmd['intervalMinSec'] : undefined,
+        intervalMaxSec:
+          typeof cmd['intervalMaxSec'] === 'number' ? cmd['intervalMaxSec'] : undefined,
+      });
+    },
+    'stop-backfill': () => stopBackfill(mode),
+    'reset-cache': () =>
+      chrome.storage.local.remove([
+        'convHashes',
+        'lastDownload',
+        'geminiActivity',
+        'todayGemini', // legacy key — keep in the reset list for older installs
+        BACKFILL_PROGRESS_KEY,
+        BACKFILL_STOP_FLAG,
+      ]),
+    'open': (cmd: Record<string, unknown>) =>
+      chrome.tabs.create({ url: String(cmd['url']), active: true }),
+    // Set the popup's date-filter without opening the popup.
+    // Mirrors the shape `popup/index.ts` writes.
+    'set-filter': (cmd: Record<string, unknown>) => {
+      const t = cmd['type'];
+      if (t !== 'today' && t !== 'yesterday' && t !== 'last7days' && t !== 'thisWeek' && t !== 'range') {
+        return { ok: false, error: `bad filter type: ${String(t)}` };
+      }
+      const filter: Record<string, unknown> = { type: t };
+      if (t === 'range') {
+        if (typeof cmd['start'] === 'string') filter['start'] = cmd['start'];
+        if (typeof cmd['end'] === 'string') filter['end'] = cmd['end'];
+      }
+      return chrome.storage.local.set({ dateFilter: filter });
+    },
+    // Directly exercise refreshActivityTab. `force: true` bypasses the 30s
+    // throttle — useful when iterating without waiting.
+    'refresh-activity': async (cmd: Record<string, unknown>) => {
+      if (cmd['force'] === true) __resetActivityThrottleForTests();
+      return refreshActivityTab(mode);
+    },
+    // Ask the myactivity content script for a fresh scrape + diagnostics.
+    'inspect-myactivity': async () => {
+      const tabs = await chrome.tabs.query({
+        url: 'https://myactivity.google.com/*',
+      });
+      if (tabs.length === 0) return { ok: false, error: 'no myactivity tab open' };
+      const tab = tabs[0]!;
+      if (tab.id == null) return { ok: false, error: 'myactivity tab has no id' };
+      try {
+        const ack = await chrome.tabs.sendMessage(tab.id, {
+          type: 'INSPECT_MYACTIVITY',
+        });
+        return { ok: true, tabId: tab.id, tabUrl: tab.url, snapshot: ack };
+      } catch (err) {
+        return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
+      }
+    },
+    'dump-storage': async (cmd: Record<string, unknown>) => {
+      const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : null;
+      return chrome.storage.local.get(keys);
+    },
+    'snapshot-dom': async (cmd: Record<string, unknown>) => {
+      const target =
+        cmd['target'] === 'claude' || cmd['target'] === 'gemini'
+          ? (cmd['target'] as 'claude' | 'gemini')
+          : undefined;
+      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+      const geminiTabs = await chrome.tabs.query({
+        url: 'https://gemini.google.com/*',
+      });
+      const candidates =
+        target === 'claude'
+          ? claudeTabs
+          : target === 'gemini'
+            ? geminiTabs
+            : [...claudeTabs, ...geminiTabs];
+      if (candidates.length === 0) return { ok: false, error: 'no matching tab open' };
+      const tab = candidates.find((t) => t.active) ?? candidates[0]!;
+      if (tab.id == null) return { ok: false, error: 'tab has no id' };
+      try {
+        const ack = await chrome.tabs.sendMessage(tab.id, { type: 'SNAPSHOT_DOM' });
+        return {
+          ok: true,
+          tabId: tab.id,
+          tabUrl: tab.url,
+          snapshot: ack?.snapshot,
+          ackError: ack?.error,
+        };
+      } catch (err) {
+        return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
+      }
+    },
+    'diagnose': async () => {
+      const manifest = chrome.runtime.getManifest();
+      const storage = (await chrome.storage.local.get(null)) as Record<string, unknown>;
+      const summary: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(storage)) {
+        if (key === 'convHashes' && value && typeof value === 'object') {
+          const entries = Object.keys(value as Record<string, string>);
+          summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
+        } else if (key === 'backfillProgress' && value && typeof value === 'object') {
+          const prog = value as {
+            state?: string;
+            startedAt?: number;
+            finishedAt?: number;
+            errorMessage?: string;
+            perProvider?: Record<
+              string,
+              {
+                total?: number;
+                done?: number;
+                failed?: number;
+                skipped?: number;
+                log?: unknown[];
+              }
+            >;
+          };
+          const perProvider: Record<string, unknown> = {};
+          for (const [p, pp] of Object.entries(prog.perProvider ?? {})) {
+            perProvider[p] = {
+              total: pp.total,
+              done: pp.done,
+              failed: pp.failed,
+              skipped: pp.skipped,
+              recentLog: Array.isArray(pp.log) ? pp.log.slice(-10) : [],
+            };
+          }
+          summary[key] = {
+            state: prog.state,
+            startedAt: prog.startedAt,
+            finishedAt: prog.finishedAt,
+            errorMessage: prog.errorMessage,
+            perProvider,
+          };
+        } else {
+          summary[key] = value;
+        }
+      }
+      const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
+      const geminiTabs = await chrome.tabs.query({
+        url: 'https://gemini.google.com/*',
+      });
+      const chatgptTabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+      const myactivityTabs = await chrome.tabs.query({
+        url: 'https://myactivity.google.com/*',
+      });
+      const tabs = [
+        ...claudeTabs,
+        ...geminiTabs,
+        ...chatgptTabs,
+        ...myactivityTabs,
+      ].map((t) => ({
+        id: t.id,
+        url: t.url,
+        status: t.status,
+        active: t.active,
+      }));
+      return {
+        extensionId: chrome.runtime.id,
+        version: manifest.version,
+        permissions: {
+          permissions: manifest.permissions ?? [],
+          hostPermissions: manifest.host_permissions ?? [],
+        },
+        tabs,
+        storage: summary,
+      };
+    },
+  };
+}
+
+// Dev-only: full dev-rpc sidecar — auto-reload, log forwarding, command poller.
+// Dead-code-eliminated when __WEAVER_DEV__ is false.
 if (__WEAVER_DEV__) {
   startDevServer({
     source: 'background',
     handlers: {
-      'start-backfill': async (cmd) => {
-        const rawProviders = Array.isArray(cmd['providers'])
-          ? (cmd['providers'] as unknown[])
-          : ['claude', 'gemini'];
-        const providers = rawProviders.filter(
-          (p): p is Provider => p === 'claude' || p === 'gemini' || p === 'chatgpt',
-        );
-        return startBackfill(providers, '[dev]', {
-          intervalMinSec:
-            typeof cmd['intervalMinSec'] === 'number' ? cmd['intervalMinSec'] : undefined,
-          intervalMaxSec:
-            typeof cmd['intervalMaxSec'] === 'number' ? cmd['intervalMaxSec'] : undefined,
-        });
-      },
-      'stop-backfill': () => stopBackfill('[dev]'),
-      'reset-cache': () =>
-        chrome.storage.local.remove([
-          'convHashes',
-          'lastDownload',
-          'geminiActivity',
-          'todayGemini', // legacy key — keep in the reset list for older installs
-          BACKFILL_PROGRESS_KEY,
-          BACKFILL_STOP_FLAG,
-        ]),
-      'open': (cmd) =>
-        chrome.tabs.create({ url: String(cmd['url']), active: true }),
+      ...buildRpcHandlers('[dev]'),
       'reload': () => chrome.runtime.reload(),
-      // Dev: set the popup's date-filter from the CLI without opening
-      // the popup. Mirrors the shape `popup/index.ts` writes.
-      'set-filter': (cmd) => {
-        const t = cmd['type'];
-        if (t !== 'today' && t !== 'yesterday' && t !== 'last7days' && t !== 'thisWeek' && t !== 'range') {
-          return { ok: false, error: `bad filter type: ${String(t)}` };
-        }
-        const filter: Record<string, unknown> = { type: t };
-        if (t === 'range') {
-          if (typeof cmd['start'] === 'string') filter['start'] = cmd['start'];
-          if (typeof cmd['end'] === 'string') filter['end'] = cmd['end'];
-        }
-        return chrome.storage.local.set({ dateFilter: filter });
-      },
-      // Dev: directly exercise refreshActivityTab (which carries the
-      // tracked-id fast path + duplicate-tab self-heal). Bypasses the
-      // normal sender check so we can drive it from the dev console.
-      'refresh-activity': async (cmd) => {
-        // The 30s throttle is fine for normal use but pointless when the
-        // dev operator is iterating; let `force` opt out.
-        if (cmd['force'] === true) __resetActivityThrottleForTests();
-        return refreshActivityTab('[dev]');
-      },
-      // Dev: ask the myactivity content script for a fresh scrape +
-      // header-candidate diagnostics. Useful when the persisted
-      // `geminiActivity` is empty and we don't know whether the page
-      // hasn't hydrated yet, the headers don't match our regexes, or
-      // the c-wiz items aren't where we expect.
-      'inspect-myactivity': async () => {
-        const tabs = await chrome.tabs.query({
-          url: 'https://myactivity.google.com/*',
-        });
-        if (tabs.length === 0) return { ok: false, error: 'no myactivity tab open' };
-        const tab = tabs[0]!;
-        if (tab.id == null) return { ok: false, error: 'myactivity tab has no id' };
-        try {
-          const ack = await chrome.tabs.sendMessage(tab.id, {
-            type: 'INSPECT_MYACTIVITY',
-          });
-          return { ok: true, tabId: tab.id, tabUrl: tab.url, snapshot: ack };
-        } catch (err) {
-          return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
-        }
-      },
-      'dump-storage': async (cmd) => {
-        const keys = Array.isArray(cmd['keys']) ? (cmd['keys'] as string[]) : null;
-        return chrome.storage.local.get(keys);
-      },
-      'snapshot-dom': async (cmd) => {
-        const target =
-          cmd['target'] === 'claude' || cmd['target'] === 'gemini'
-            ? (cmd['target'] as 'claude' | 'gemini')
-            : undefined;
-        const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
-        const geminiTabs = await chrome.tabs.query({
-          url: 'https://gemini.google.com/*',
-        });
-        const candidates =
-          target === 'claude'
-            ? claudeTabs
-            : target === 'gemini'
-              ? geminiTabs
-              : [...claudeTabs, ...geminiTabs];
-        if (candidates.length === 0) return { ok: false, error: 'no matching tab open' };
-        const tab = candidates.find((t) => t.active) ?? candidates[0]!;
-        if (tab.id == null) return { ok: false, error: 'tab has no id' };
-        try {
-          const ack = await chrome.tabs.sendMessage(tab.id, { type: 'SNAPSHOT_DOM' });
-          return {
-            ok: true,
-            tabId: tab.id,
-            tabUrl: tab.url,
-            snapshot: ack?.snapshot,
-            ackError: ack?.error,
-          };
-        } catch (err) {
-          return { ok: false, error: String(err), tabId: tab.id, tabUrl: tab.url };
-        }
-      },
-      'diagnose': async () => {
-        const manifest = chrome.runtime.getManifest();
-        const storage = (await chrome.storage.local.get(null)) as Record<string, unknown>;
-        const summary: Record<string, unknown> = {};
-        for (const [key, value] of Object.entries(storage)) {
-          if (key === 'convHashes' && value && typeof value === 'object') {
-            const entries = Object.keys(value as Record<string, string>);
-            summary[key] = { count: entries.length, sampleKeys: entries.slice(0, 3) };
-          } else if (key === 'backfillProgress' && value && typeof value === 'object') {
-            const prog = value as {
-              state?: string;
-              startedAt?: number;
-              finishedAt?: number;
-              errorMessage?: string;
-              perProvider?: Record<
-                string,
-                {
-                  total?: number;
-                  done?: number;
-                  failed?: number;
-                  skipped?: number;
-                  log?: unknown[];
-                }
-              >;
-            };
-            const perProvider: Record<string, unknown> = {};
-            for (const [p, pp] of Object.entries(prog.perProvider ?? {})) {
-              perProvider[p] = {
-                total: pp.total,
-                done: pp.done,
-                failed: pp.failed,
-                skipped: pp.skipped,
-                recentLog: Array.isArray(pp.log) ? pp.log.slice(-10) : [],
-              };
-            }
-            summary[key] = {
-              state: prog.state,
-              startedAt: prog.startedAt,
-              finishedAt: prog.finishedAt,
-              errorMessage: prog.errorMessage,
-              perProvider,
-            };
-          } else {
-            summary[key] = value;
-          }
-        }
-        const claudeTabs = await chrome.tabs.query({ url: 'https://claude.ai/*' });
-        const geminiTabs = await chrome.tabs.query({
-          url: 'https://gemini.google.com/*',
-        });
-        const chatgptTabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
-        const myactivityTabs = await chrome.tabs.query({
-          url: 'https://myactivity.google.com/*',
-        });
-        const tabs = [
-          ...claudeTabs,
-          ...geminiTabs,
-          ...chatgptTabs,
-          ...myactivityTabs,
-        ].map((t) => ({
-          id: t.id,
-          url: t.url,
-          status: t.status,
-          active: t.active,
-        }));
-        return {
-          extensionId: chrome.runtime.id,
-          version: manifest.version,
-          permissions: {
-            permissions: manifest.permissions ?? [],
-            hostPermissions: manifest.host_permissions ?? [],
-          },
-          tabs,
-          storage: summary,
-        };
-      },
     },
+  });
+}
+
+// Production RPC: command polling + log forwarding, no auto-reload.
+// Enabled in builds produced by `pnpm build:rpc` (WEAVER_RPC=1).
+// Dead-code-eliminated in plain production builds.
+if (__WEAVER_RPC__) {
+  // Clear the dev-build keepalive alarm so stale ticks don't wake this SW.
+  void chrome.alarms.clear('ext-dev-rpc-keepalive');
+  startDevServer({
+    source: 'background',
+    handlers: buildRpcHandlers('[rpc]'),
+    features: { autoReload: false, forwarder: true, devLogRelay: false, commandPoller: true },
+    tag: '[weaver:rpc]',
   });
 }
 
