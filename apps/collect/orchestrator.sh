@@ -32,10 +32,19 @@ fi
 # Resolve world-weaver path to absolute. Allow tilde + relative.
 WORLD_WEAVER_PATH="$(cd "$SCRIPT_DIR" && cd "${WORLD_WEAVER_PATH/#\~/$HOME}" && pwd)"
 
-# Date being digested = "yesterday" in local TZ. The world-weaver schema is
-# UTC+8, but launchd runs in local TZ (which we assume is UTC+8 for this
-# user). If you move time zones, set TZ explicitly here.
-DIGEST_DATE=$(date -v-1d +%Y-%m-%d)
+# Date being digested. Defaults to "yesterday" in local TZ; pass
+# TARGET_DATE=YYYY-MM-DD as env to backfill any specific past day.
+# When TARGET_DATE is set, the extension's date filter is forced to a
+# single-day range (overriding $DATE_FILTER from config) so the SW only
+# walks chats from exactly that day.
+if [[ -n "${TARGET_DATE:-}" ]]; then
+  DIGEST_DATE="$TARGET_DATE"
+  DATE_FILTER="range"
+  DATE_FILTER_START="$TARGET_DATE"
+  DATE_FILTER_END="$TARGET_DATE"
+else
+  DIGEST_DATE=$(date -v-1d +%Y-%m-%d)
+fi
 RAW_DIR="$HOME/Downloads/weaver-octopus/$DIGEST_DATE"
 BRANCH="${BRANCH_TEMPLATE/\{DATE\}/$DIGEST_DATE}"
 
@@ -96,17 +105,30 @@ if [[ "$CAFFEINATE_DURING_RUN" == "true" ]]; then
   echo "[env] caffeinate started (pid $CAFFEINATE_PID)"
 fi
 
-if [[ "$CHROME_RESTART_BEFORE_RUN" == "true" ]]; then
-  chrome_restart
-  echo "[env] waiting ${CHROME_WAIT_SECONDS}s for Chrome to settle..."
-  sleep "$CHROME_WAIT_SECONDS"
-fi
+# When skipping backfill, we don't touch Chrome / extension — Step 4 only
+# needs the local raw files + claude CLI.
+if [[ -z "${SKIP_BACKFILL:-}" ]]; then
+  if [[ "$CHROME_RESTART_BEFORE_RUN" == "true" ]]; then
+    chrome_restart
+    echo "[env] waiting ${CHROME_WAIT_SECONDS}s for Chrome to settle..."
+    sleep "$CHROME_WAIT_SECONDS"
+  fi
 
-rpc_ensure_server
-chrome_wait_sw_alive 30
+  rpc_ensure_server
+  chrome_wait_sw_alive 30
+else
+  echo "[env] SKIP_BACKFILL set — skipping chrome restart + RPC server"
+fi
 
 # ─── 3. Backfill ─────────────────────────────────────────────────────────
 echo "─── 3. Backfill ───"
+
+# Manual override: re-digest existing raw chats without re-walking the
+# extension. Useful when an earlier run already downloaded everything but
+# crashed before / during digest.
+if [[ -n "${SKIP_BACKFILL:-}" ]]; then
+  echo "[backfill] SKIP_BACKFILL set — using existing raw chats in $RAW_DIR"
+else
 
 # Always issue a stop-backfill first to clear any stale "running" state
 # left by a previous crash / Chrome quit mid-flight. Cheap when nothing is
@@ -115,10 +137,18 @@ rpc_command '{"action":"stop-backfill"}' >/dev/null
 sleep 2
 echo "[backfill] cleared stale state"
 
-rpc_command "{\"action\":\"set-filter\",\"type\":\"$DATE_FILTER\"}" >/dev/null
-echo "[backfill] filter set to $DATE_FILTER"
+if [[ "$DATE_FILTER" == "range" ]]; then
+  rpc_command "{\"action\":\"set-filter\",\"type\":\"range\",\"start\":\"$DATE_FILTER_START\",\"end\":\"$DATE_FILTER_END\"}" >/dev/null
+  echo "[backfill] filter set to range $DATE_FILTER_START → $DATE_FILTER_END"
+else
+  rpc_command "{\"action\":\"set-filter\",\"type\":\"$DATE_FILTER\"}" >/dev/null
+  echo "[backfill] filter set to $DATE_FILTER"
+fi
 
-# JSON-array of providers from the bash array
+# JSON-array of providers from the bash array. The extension's runner now
+# distinguishes "older than range" (counts toward early-stop) from "newer
+# than range" (doesn't, since the date-sorted sidebar has newer chats
+# before in-range ones), so past-date runs work with the default threshold.
 PROVIDERS_JSON=$(printf '"%s",' "${PROVIDERS[@]}" | sed 's/,$//')
 rpc_command "{\"action\":\"start-backfill\",\"providers\":[$PROVIDERS_JSON]}" >/dev/null
 echo "[backfill] start signal sent for providers: ${PROVIDERS[*]}"
@@ -127,6 +157,7 @@ if ! chrome_wait_backfill_done "$BACKFILL_TIMEOUT_MINUTES"; then
   echo "[backfill] timed out — aborting before digest"
   exit 1
 fi
+fi  # /SKIP_BACKFILL
 
 # ─── 4. Digest ───────────────────────────────────────────────────────────
 echo "─── 4. Digest ───"

@@ -31,7 +31,19 @@ chrome_restart() {
   done
 
   echo "[chrome] relaunching..."
-  open -a "Google Chrome"
+  # macOS LaunchServices sometimes returns -600 right after a quit; the
+  # process is gone but the appkit-side state is still settling. Retry a
+  # couple of times before giving up.
+  local attempt=0
+  while ! open -a "Google Chrome" 2>&1; do
+    attempt=$((attempt + 1))
+    if [[ $attempt -ge 3 ]]; then
+      echo "[chrome] open -a failed after ${attempt} attempts" >&2
+      return 1
+    fi
+    echo "[chrome] open -a returned non-zero, retrying in 2s (attempt ${attempt})"
+    sleep 2
+  done
 }
 
 # Spawn the RPC server in the background unless one is already listening.
@@ -116,11 +128,18 @@ chrome_wait_backfill_done() {
     rpc_command '{"action":"dump-storage","keys":["backfillProgress"]}' >/dev/null
     sleep "$poll_interval"
 
+    # Pull the state from the most recent dump-storage RESPONSE line.
+    # The poller sees both "received" and "dump-storage" entries — only the
+    # latter carries the actual storage payload. The backfillProgress JSON
+    # is nested (recentLog entries close braces before `state` appears),
+    # so a `[^}]*`-style match bails too early; we instead just grep for
+    # any "state":"..." in the response line.
     local state
     state=$(tail -n 200 "$RPC_LOG_PATH" 2>/dev/null \
-      | grep -oE '"backfillProgress":\{[^}]*"state":"[^"]+"' \
+      | grep '"dump-storage",{"backfillProgress"' \
       | tail -1 \
       | grep -oE '"state":"[^"]+"' \
+      | tail -1 \
       | cut -d'"' -f4)
 
     if [[ "$state" == "done" || "$state" == "idle" ]]; then
