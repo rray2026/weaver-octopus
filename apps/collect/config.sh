@@ -1,72 +1,55 @@
-# Configuration for the daily collect pipeline. Sourced by orchestrator.sh.
-# Pure shell so no external parser is needed (yq etc.).
+# Public defaults for the daily collect pipeline. Sourced by orchestrator.sh
+# / cleanup.sh / recover.sh / launchd/install.sh.
+#
+# Anything host-specific (the world-weaver path, schedule preferences, etc.)
+# goes in `config.local.sh` — gitignored, sourced at the end of this file.
+# A first-time setup needs at minimum:
+#
+#   $ cat > apps/collect/config.local.sh <<EOF
+#   WORLD_WEAVER_PATH="\$HOME/path/to/world-weaver"
+#   EOF
+#
+# See apps/collect/README.md for the full list of overridable values.
 
-# Path to the world-weaver knowledge base. Use an absolute path so the
-# orchestrator works the same whether invoked manually, by launchd, or
-# from a non-default cwd. `$HOME` is expanded on source.
-WORLD_WEAVER_PATH="$HOME/Documents/Workspace/cowork/world/world-weaver"
+# ─── Required (no sane default — must be set in config.local.sh) ─────────
+WORLD_WEAVER_PATH=""
 
-# Default branch to fork each daily auto/digest-* branch from. The
-# orchestrator checks this out at the start of every run so step 2 doesn't
-# accidentally inherit yesterday's auto branch (Step 3 leaves the working
-# tree on the new auto/digest-* branch, which would chain commits if not
-# reset).
+# ─── World-weaver behaviour ──────────────────────────────────────────────
+# The branch each daily auto/digest-* PR is forked from. Step 3 leaves the
+# tree on the new branch, so the orchestrator checks this out at the start
+# of every run.
 WORLD_WEAVER_DEFAULT_BRANCH="main"
 
-# Providers to back-fill. The chrome extension's start-backfill accepts any
-# subset of these.
+# ─── Providers + date filter ─────────────────────────────────────────────
 PROVIDERS=(claude gemini chatgpt)
-
-# Date filter passed to the extension. One of: today | yesterday | last7days
-# | thisWeek | range. The pipeline is designed for "yesterday" — other values
-# work but the digest prompt assumes a single-day window.
 DATE_FILTER="yesterday"
 
-# If true, quit and relaunch Chrome at the start of each run. Reliably clears
-# accumulated per-tab throttling / App Nap state that otherwise hangs the
-# backfill for inactive renderers (verified live, see chrome-extension
-# DEVELOPMENT.md).
+# ─── Chrome / OS / RPC ───────────────────────────────────────────────────
 CHROME_RESTART_BEFORE_RUN=true
-
-# Wait time after relaunching Chrome before declaring it ready (seconds).
-# The SW + content scripts take ~5–10s to come up.
 CHROME_WAIT_SECONDS=15
-
-# Hold the system + display awake for the duration of the run via
-# `caffeinate -dis`. Auto-kill on script exit.
 CAFFEINATE_DURING_RUN=true
-
-# Hard ceiling on the backfill polling loop (minutes). Beyond this we abort
-# the run, leave any partial downloads in place, and skip the digest step.
 BACKFILL_TIMEOUT_MINUTES=10
-
-# Where per-day run logs are written. Created if missing.
-LOG_DIR="$HOME/Library/Logs/weaver-collect"
-
-# RPC server endpoint. Default matches the chrome-extension build:rpc bundle.
 RPC_BASE="http://127.0.0.1:9876"
 
-# Branch name template for the daily PR. {DATE} is replaced with YYYY-MM-DD
-# (the date being digested, which equals "yesterday" at run time).
+# ─── Logging / branching ─────────────────────────────────────────────────
+LOG_DIR="$HOME/Library/Logs/weaver-collect"
 BRANCH_TEMPLATE="auto/digest-{DATE}"
 
-# launchd schedule (used by launchd/install.sh). 02:00 local time.
+# ─── launchd schedule (used by launchd/install.sh) ───────────────────────
 LAUNCHD_HOUR=2
 LAUNCHD_MINUTE=0
 
 # ─── Cleanup retention ───────────────────────────────────────────────────
-# cleanup.sh enforces these. Orchestrator runs cleanup at the end of every
-# run as a soft step (failures don't fail the run).
-
-# Per-day orchestrator logs in $LOG_DIR.
 LOG_RETENTION_DAYS=30
-
-# Raw chat directories under ~/Downloads/weaver-octopus/<YYYY-MM-DD>/.
-# Already-PR'd content is in world-weaver's git history; the raw markdown
-# is only useful for re-running a digest or auditing what was discarded.
 RAW_CHATS_RETENTION_DAYS=30
-
-# .dev-runtime.log accumulates every console.* from the SW, log forwarder,
-# content scripts. It's append-only and grows fast during backfill. We
-# truncate (not delete — the SW is appending) when it exceeds this.
 DEV_LOG_MAX_MB=10
+
+# ─── Local overrides ─────────────────────────────────────────────────────
+# Sourced last so it can override any default above. Gitignored so private
+# paths and personal preferences never land in commits.
+__config_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$__config_dir/config.local.sh" ]]; then
+  # shellcheck source=./config.local.sh
+  source "$__config_dir/config.local.sh"
+fi
+unset __config_dir

@@ -60,13 +60,27 @@ The `build:rpc` bundle adds `http://127.0.0.1/*` to the manifest so the SW can r
 
 ## Configuration
 
-Edit `config.sh`. The defaults assume:
+Two files:
 
-- world-weaver is at `../../world/world-weaver` relative to this directory
-- providers: claude, gemini, chatgpt
-- date filter: yesterday
+- **`config.sh`** (committed) — defaults that work for any user. Don't put personal paths here.
+- **`config.local.sh`** (gitignored) — your private overrides. Sourced last so it can override anything.
+
+`WORLD_WEAVER_PATH` has no default and **must** be set in `config.local.sh`. Minimum first-run setup:
+
+```bash
+cat > apps/collect/config.local.sh <<'EOF'
+WORLD_WEAVER_PATH="$HOME/path/to/world-weaver"
+EOF
+```
+
+Other defaults (override in `config.local.sh` if you want different):
+
+- providers: `(claude gemini chatgpt)`
+- date filter: `yesterday`
 - log dir: `~/Library/Logs/weaver-collect/`
 - schedule: 02:00 daily
+- branch template: `auto/digest-{DATE}` (forked from `main`)
+- retention: 30-day logs / 30-day raw chats / 10 MB dev-runtime.log cap
 
 ## Running
 

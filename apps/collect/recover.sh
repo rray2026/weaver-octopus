@@ -21,6 +21,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./config.sh
 source "$SCRIPT_DIR/config.sh"
 
+if [[ -z "${WORLD_WEAVER_PATH:-}" ]]; then
+  echo "Error: WORLD_WEAVER_PATH is unset (create $SCRIPT_DIR/config.local.sh)." >&2
+  exit 1
+fi
+
 WORLD_WEAVER_PATH="$(cd "$SCRIPT_DIR" && cd "${WORLD_WEAVER_PATH/#\~/$HOME}" && pwd)"
 
 APPLY=false

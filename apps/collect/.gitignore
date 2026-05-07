@@ -1,0 +1,2 @@
+# Host-specific overrides — never commit (would leak personal directory layout).
+config.local.sh

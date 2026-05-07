@@ -22,6 +22,13 @@ RPC_LOG_PATH="$CHROME_EXTENSION_DIR/.dev-runtime.log"
 # shellcheck source=./config.sh
 source "$SCRIPT_DIR/config.sh"
 
+if [[ -z "${WORLD_WEAVER_PATH:-}" ]]; then
+  echo "Error: WORLD_WEAVER_PATH is unset." >&2
+  echo "Create $SCRIPT_DIR/config.local.sh with at minimum:" >&2
+  echo "  WORLD_WEAVER_PATH=\"\$HOME/path/to/world-weaver\"" >&2
+  exit 1
+fi
+
 # Resolve world-weaver path to absolute. Allow tilde + relative.
 WORLD_WEAVER_PATH="$(cd "$SCRIPT_DIR" && cd "${WORLD_WEAVER_PATH/#\~/$HOME}" && pwd)"
 
