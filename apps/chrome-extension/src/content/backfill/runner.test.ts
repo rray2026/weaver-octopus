@@ -573,6 +573,50 @@ describe('runBackfill', () => {
       expect(earlyStop!.reason).toMatch(/remaining 1/);
     });
 
+    it('does not count "skipped:date:newer" toward early termination (past-date runs)', async () => {
+      // Sidebar is date-sorted newest-first. Targeting a past date means we
+      // walk newer-than-range chats first, then in-range, then older. The
+      // "newer" prefix must NOT fire early-stop or we'd never reach the
+      // in-range chats.
+      const links = Array.from({ length: 10 }, (_, i) => ({
+        href: `/chat/c${i}`,
+        title: `Chat ${i}`,
+      }));
+      const { adapter, navigate } = makeChainAdapter(links, [
+        // 6 newer-than-range in a row — old heuristic would have stopped at 5
+        { action: 'skipped:date:newer' },
+        { action: 'skipped:date:newer' },
+        { action: 'skipped:date:newer' },
+        { action: 'skipped:date:newer' },
+        { action: 'skipped:date:newer' },
+        { action: 'skipped:date:newer' },
+        // then we reach the in-range chat
+        { action: 'downloaded' },
+        // then older-than-range starts piling up — these DO count
+        { action: 'skipped:date' },
+        { action: 'skipped:date' },
+        { action: 'skipped:date' },
+      ]);
+      const patches: BackfillProviderProgressPatch[] = [];
+
+      await runBackfill(adapter, {
+        minIntervalMs: 1,
+        maxIntervalMs: 2,
+        perChatTimeoutMs: 5000,
+        pollIntervalMs: 50,
+        stopAfterConsecutiveDateSkips: 3,
+        reportPatch: async (p) => {
+          patches.push(p);
+        },
+      });
+
+      // All 10 visited; the 3 trailing older skips end the loop naturally
+      // (last index, no remaining chats), so no early-stop log either.
+      expect(navigate).toHaveBeenCalledTimes(10);
+      const logs = patches.flatMap((p) => p.appendLog ?? []);
+      expect(logs.find((l) => l.reason?.startsWith('early stop'))).toBeUndefined();
+    });
+
     it('threshold = 0 disables early termination', async () => {
       const links = Array.from({ length: 6 }, (_, i) => ({
         href: `/chat/c${i}`,

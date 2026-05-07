@@ -15,10 +15,13 @@ import type { Provider } from '../types/index.js';
 
 export type CaptureAction =
   | 'downloaded'
-  | 'skipped:date'        // outside the active date filter range
-  | 'skipped:hash'        // identical content already downloaded
-  | 'skipped:empty'       // parser found no messages / no turns
-  | 'skipped:other';      // anything else (parser-null, race)
+  | 'skipped:date'         // outside the active date filter range — older than range.start
+  | 'skipped:date:newer'   // outside the active date filter range — newer than range.end
+                           // (sidebar is date-sorted newest-first, so newer chats come BEFORE
+                           // in-range ones; runner must keep walking, not early-stop)
+  | 'skipped:hash'         // identical content already downloaded
+  | 'skipped:empty'        // parser found no messages / no turns
+  | 'skipped:other';       // anything else (parser-null, race)
 
 export interface CaptureDecisionDetail {
   provider: Provider;

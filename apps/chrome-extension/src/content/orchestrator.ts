@@ -164,12 +164,24 @@ export function startOrchestrator(
         total: conv.messages.length,
       });
       if (inRange.length === 0) {
-        console.log(tag, 'skip: no messages in date range');
+        // Distinguish "newer than range" from "older than range" so the
+        // runner's early-stop heuristic doesn't bail prematurely when the
+        // user is targeting a past date and the sidebar's most-recent
+        // chats are NEWER than that date (and thus precede in-range ones).
+        const maxTs = conv.messages.length
+          ? Math.max(...conv.messages.map((m) => m.createdAt))
+          : 0;
+        const newerThanRange = maxTs >= range.end;
+        const action = newerThanRange ? 'skipped:date:newer' : 'skipped:date';
+        const reason = newerThanRange
+          ? `all messages newer than ${range.label} (max ts ahead of range)`
+          : `no messages within ${range.label}`;
+        console.log(tag, 'skip: no messages in date range', { newerThanRange });
         dispatchCaptureDecision({
           provider,
           conversationId: msg.conversationId,
-          action: 'skipped:date',
-          reason: `no messages within ${range.label}`,
+          action,
+          reason,
         });
         return;
       }

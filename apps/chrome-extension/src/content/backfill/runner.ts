@@ -178,7 +178,14 @@ export async function runBackfill(
         };
         await opts.reportPatch({ skipped: 1, appendLog: [outcome] });
         if (result.action === 'skipped:date') {
+          // "older than range.start" — rest of the date-sorted sidebar is too
           consecutiveDateSkips++;
+        } else if (result.action === 'skipped:date:newer') {
+          // "newer than range.end" — we're walking the most-recent chats
+          // that haven't reached the target date yet. Don't count these
+          // toward early-stop; reset to 0 so any later "too-old" streak
+          // starts fresh from when we actually exit the range.
+          consecutiveDateSkips = 0;
         } else {
           // Cached/empty/other shouldn't count toward the early-termination
           // threshold — only "definitely outside the user's date range" does.

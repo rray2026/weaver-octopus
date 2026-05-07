@@ -98,6 +98,10 @@ function buildRpcHandlers(mode: string) {
           typeof cmd['intervalMinSec'] === 'number' ? cmd['intervalMinSec'] : undefined,
         intervalMaxSec:
           typeof cmd['intervalMaxSec'] === 'number' ? cmd['intervalMaxSec'] : undefined,
+        stopAfterConsecutiveDateSkips:
+          typeof cmd['stopAfterConsecutiveDateSkips'] === 'number'
+            ? cmd['stopAfterConsecutiveDateSkips']
+            : undefined,
       });
     },
     'stop-backfill': () => stopBackfill(mode),
@@ -580,6 +584,11 @@ export function __resetActivityThrottleForTests(): void {
 interface StartBackfillOverrides {
   intervalMinSec?: number;
   intervalMaxSec?: number;
+  /** Number of consecutive out-of-range chats that triggers early-stop.
+   *  Defaults to 5 (sidebar is date-sorted, so 5 in a row = the rest is too).
+   *  Pass 0 to disable, useful when filtering for a past date that lies
+   *  beyond the most-recent N chats in the sidebar. */
+  stopAfterConsecutiveDateSkips?: number;
 }
 
 async function startBackfill(
@@ -606,7 +615,11 @@ async function startBackfill(
   await writeProgress(fresh);
 
   const interval = resolveInterval(overrides);
-  console.log(tag, 'backfill interval', interval);
+  const stopAfterConsecutiveDateSkips =
+    overrides.stopAfterConsecutiveDateSkips ?? BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS;
+  console.log(tag, 'backfill interval', interval, {
+    stopAfterConsecutiveDateSkips,
+  });
 
   // Open / focus a tab per provider, all under one tab group.
   const tabIds: number[] = [];
@@ -686,7 +699,7 @@ async function startBackfill(
       minIntervalMs: interval.minMs,
       maxIntervalMs: interval.maxMs,
       perChatTimeoutMs: BACKFILL_DEFAULT_PER_CHAT_TIMEOUT_MS,
-      stopAfterConsecutiveDateSkips: BACKFILL_DEFAULT_STOP_AFTER_CONSECUTIVE_DATE_SKIPS,
+      stopAfterConsecutiveDateSkips,
     };
     try {
       const ack = await chrome.tabs.sendMessage(tabId, message);
