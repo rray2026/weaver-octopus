@@ -1,9 +1,10 @@
 # Configuration for the daily collect pipeline. Sourced by orchestrator.sh.
 # Pure shell so no external parser is needed (yq etc.).
 
-# Path to the world-weaver knowledge base, relative to this file's parent OR
-# absolute. Tilde is expanded; ../ is resolved against apps/collect/.
-WORLD_WEAVER_PATH="../../../world/world-weaver"
+# Path to the world-weaver knowledge base. Use an absolute path so the
+# orchestrator works the same whether invoked manually, by launchd, or
+# from a non-default cwd. `$HOME` is expanded on source.
+WORLD_WEAVER_PATH="$HOME/Documents/Workspace/cowork/world/world-weaver"
 
 # Default branch to fork each daily auto/digest-* branch from. The
 # orchestrator checks this out at the start of every run so step 2 doesn't
