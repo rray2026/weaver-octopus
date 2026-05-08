@@ -18,6 +18,7 @@ claude_run() {
   local prompt_file="$1"
   local mode="${2:-resume}"
   local output_format="${3:-text}"
+  local timeout_sec="${4:-1800}"
 
   if [[ ! -f "$prompt_file" ]]; then
     echo "[claude] prompt file missing: $prompt_file" >&2
@@ -38,7 +39,27 @@ claude_run() {
     args+=(--resume "$CLAUDE_SESSION_ID")
   fi
 
-  ( cd "$WORLD_WEAVER_PATH" && claude "${args[@]}" "$prompt" )
+  # Hard timeout: a hung claude --print would otherwise occupy the
+  # LaunchAgent slot indefinitely (verified live — Mac sleeping mid-run
+  # left a Step 1 claude wedged for 8 hours, blocking the next morning's
+  # automated run). Bash watchdog: spawn the call backgrounded, fork a
+  # sleeper that SIGTERMs (then SIGKILLs) on expiry, wait on the call.
+  ( cd "$WORLD_WEAVER_PATH" && exec claude "${args[@]}" "$prompt" ) &
+  local cmd_pid=$!
+  ( sleep "$timeout_sec"
+    if kill -0 "$cmd_pid" 2>/dev/null; then
+      echo "[claude] timeout ${timeout_sec}s exceeded — sending SIGTERM to $cmd_pid" >&2
+      kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 5
+      kill -KILL "$cmd_pid" 2>/dev/null || true
+    fi
+  ) &
+  local watchdog_pid=$!
+  local rc=0
+  wait "$cmd_pid" || rc=$?
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$rc"
 }
 
 # Generate a UUID for the session. Mac has uuidgen built in.

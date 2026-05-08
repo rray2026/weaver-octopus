@@ -195,13 +195,13 @@ echo "[digest] claude session id: $CLAUDE_SESSION_ID"
 export RAW_DIR DIGEST_DATE BRANCH WORLD_WEAVER_PATH CHAT_COUNT CLAUDE_SESSION_ID
 
 echo "── Step 1/3: load context ──"
-claude_run "$SCRIPT_DIR/prompts/01-load-context.md" first
+claude_run "$SCRIPT_DIR/prompts/01-load-context.md" first text 600
 
 echo "── Step 2/3: digest ──"
-claude_run "$SCRIPT_DIR/prompts/02-digest.md" resume
+claude_run "$SCRIPT_DIR/prompts/02-digest.md" resume text 2400
 
 echo "── Step 3/3: publish ──"
-claude_run "$SCRIPT_DIR/prompts/03-publish.md" resume
+claude_run "$SCRIPT_DIR/prompts/03-publish.md" resume text 600
 
 # ─── 5. Cleanup ──────────────────────────────────────────────────────────
 # Soft step: failures here don't fail the run. Daily cleanup keeps logs +
