@@ -145,6 +145,14 @@ else
   echo "[backfill] filter set to $DATE_FILTER"
 fi
 
+# Allow per-run override of which providers to drive (space-separated).
+# Useful for re-running just claude + gemini after a partial earlier run,
+# or skipping a provider that's logged out / sidebar empty.
+if [[ -n "${PROVIDERS_OVERRIDE:-}" ]]; then
+  read -r -a PROVIDERS <<< "$PROVIDERS_OVERRIDE"
+  echo "[backfill] PROVIDERS_OVERRIDE → ${PROVIDERS[*]}"
+fi
+
 # JSON-array of providers from the bash array. The extension's runner now
 # distinguishes "older than range" (counts toward early-stop) from "newer
 # than range" (doesn't, since the date-sorted sidebar has newer chats
