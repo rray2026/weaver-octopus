@@ -144,10 +144,14 @@ chrome_refresh_myactivity() {
       | tail -1 \
       | cut -d'"' -f4)
     if [[ -n "$scraped_iso" ]]; then
-      # ISO is UTC (trailing Z); `date -j -f` would otherwise interpret it
-      # as local time and we'd be 8 hours off in CST.
+      # scrapedAt is now local-offset ISO (e.g. `2026-05-08T09:06:58+08:00`).
+      # Strip fractional seconds + the trailing offset; remaining wall-clock
+      # parses with `date -j -f` against the system's local TZ — same TZ
+      # the scraper used to emit it, so the comparison is apples-to-apples.
+      local local_part
+      local_part=$(printf '%s' "$scraped_iso" | sed -E 's/\.[0-9]+//; s/[+-][0-9:]+$//; s/Z$//')
       local scraped_ts
-      scraped_ts=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "${scraped_iso%%.*}" '+%s' 2>/dev/null || echo 0)
+      scraped_ts=$(date -j -f '%Y-%m-%dT%H:%M:%S' "$local_part" '+%s' 2>/dev/null || echo 0)
       if [[ "$scraped_ts" -gt "$before_ts" ]]; then
         echo "[chrome] myactivity refreshed (scrapedAt=$scraped_iso)"
         return 0

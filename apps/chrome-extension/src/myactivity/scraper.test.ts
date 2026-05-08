@@ -234,7 +234,13 @@ describe('collectActivityByDate', () => {
       { date: '2026-05-05', prompts: ['yesterday-1'] },
       { date: '2026-04-29', prompts: ['last-week', 'last-week-2'] },
     ]);
-    expect(idx.scrapedAt).toBe(NOW.toISOString());
+    // Local wall-clock ISO with explicit offset; whatever the test runner's
+    // TZ is, it must match the YYYY-MM-DDTHH:MM:SS shape and end with a
+    // signed HH:MM offset. (We can't compare to a fixed string because
+    // CI may run in a different TZ than UTC+8.)
+    expect(idx.scrapedAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/,
+    );
   });
 
   it('treats only recognised date-headers as section boundaries', () => {

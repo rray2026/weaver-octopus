@@ -161,7 +161,25 @@ export function collectActivityByDate(
     }
     if (prompts.length > 0) days.push({ date: dateStr, prompts });
   }
-  return { scrapedAt: now.toISOString(), days };
+  return { scrapedAt: localIsoString(now), days };
+}
+
+/** ISO 8601 with explicit local offset (this user's machine runs UTC+8 /
+ *  Asia/Shanghai; output looks like `2026-05-08T09:06:58+08:00`). All
+ *  knowledge-base timestamps are in local time per world-weaver's
+ *  CLAUDE.md, so emitting UTC "Z" here was a mismatch — both the scraper
+ *  consumer and the collect orchestrator now read the same wall-clock. */
+function localIsoString(d: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const tzMinutes = -d.getTimezoneOffset();
+  const sign = tzMinutes >= 0 ? '+' : '-';
+  const tzh = pad(Math.floor(Math.abs(tzMinutes) / 60));
+  const tzm = pad(Math.abs(tzMinutes) % 60);
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `${sign}${tzh}:${tzm}`
+  );
 }
 
 /** Internal: every DOM element whose first visible line is a recognised
