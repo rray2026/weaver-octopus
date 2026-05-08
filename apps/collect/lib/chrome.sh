@@ -114,6 +114,52 @@ rpc_command() {
     -d "$body"
 }
 
+# Force-refresh Gemini's myactivity index. Without this, a per-day backfill
+# for a date that already has SOME prompts in the cached index won't see
+# any prompts the user typed AFTER the cache was scraped — Gemini's
+# auto-refresh only fires on "no in-range days at all", not on "partially
+# indexed". Returns 0 once scrapedAt jumps past the pre-call timestamp,
+# 1 on timeout (non-fatal: caller continues; gemini-orchestrator will fall
+# back to its own auto-refresh if the data turns out actually empty).
+chrome_refresh_myactivity() {
+  local timeout_sec=${1:-30}
+  local before_ts
+  before_ts=$(date +%s)
+
+  rpc_command '{"action":"refresh-activity","force":true}' >/dev/null
+  echo "[chrome] myactivity refresh requested"
+
+  local waited=0
+  while true; do
+    rpc_command '{"action":"dump-storage","keys":["geminiActivity"]}' >/dev/null
+    sleep 3
+    waited=$((waited + 3))
+
+    # Find the latest scrapedAt and convert to epoch seconds.
+    local scraped_iso
+    scraped_iso=$(tail -n 80 "$RPC_LOG_PATH" 2>/dev/null \
+      | grep '"dump-storage",{"geminiActivity"' \
+      | tail -1 \
+      | grep -oE '"scrapedAt":"[^"]+"' \
+      | tail -1 \
+      | cut -d'"' -f4)
+    if [[ -n "$scraped_iso" ]]; then
+      # ISO is UTC (trailing Z); `date -j -f` would otherwise interpret it
+      # as local time and we'd be 8 hours off in CST.
+      local scraped_ts
+      scraped_ts=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "${scraped_iso%%.*}" '+%s' 2>/dev/null || echo 0)
+      if [[ "$scraped_ts" -gt "$before_ts" ]]; then
+        echo "[chrome] myactivity refreshed (scrapedAt=$scraped_iso)"
+        return 0
+      fi
+    fi
+    if [[ $waited -ge $timeout_sec ]]; then
+      echo "[chrome] myactivity refresh timed out after ${timeout_sec}s — continuing anyway"
+      return 1
+    fi
+  done
+}
+
 # Poll backfillProgress.state until it transitions to a terminal state
 # ("done" or "idle"), or we hit the timeout. Returns 0 on done, 1 on
 # timeout. Uses the dev runtime log to read the dump-storage response.

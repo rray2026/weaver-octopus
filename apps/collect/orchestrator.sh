@@ -145,6 +145,16 @@ else
   echo "[backfill] filter set to $DATE_FILTER"
 fi
 
+# Pre-refresh Gemini's myactivity index when gemini is in the provider
+# list. The extension's auto-refresh only fires on "no in-range days at
+# all", so a partially-indexed day silently misses chats whose prompts
+# came AFTER the last cached scrape — verified live: we lost a 2026-05-07
+# chat because the index was scraped 02:18 that morning and the chat
+# started later in the day.
+if printf '%s\n' "${PROVIDERS[@]}" | grep -qx gemini; then
+  chrome_refresh_myactivity 30 || true
+fi
+
 # Allow per-run override of which providers to drive (space-separated).
 # Useful for re-running just claude + gemini after a partial earlier run,
 # or skipping a provider that's logged out / sidebar empty.
